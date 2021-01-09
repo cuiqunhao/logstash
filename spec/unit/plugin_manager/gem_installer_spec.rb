@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/gem_installer"
 require "pluginmanager/ui"
 require "stud/temporary"
@@ -36,15 +52,13 @@ describe LogStash::PluginManager::GemInstaller do
 
       context "when we want the message" do
         it "display the message" do
-          expect(LogStash::PluginManager.ui).to receive(:info).with(message)
-          subject.install(simple_gem, true, temporary_gem_home)
+          expect(subject.install(simple_gem, true, temporary_gem_home)).to eq(message)
         end
       end
 
       context "when we dont want the message" do
         it "doesn't display the message" do
-          expect(LogStash::PluginManager.ui).not_to receive(:info).with(message)
-          subject.install(simple_gem, false, temporary_gem_home)
+          expect(subject.install(simple_gem, false, temporary_gem_home)).to be_nil
         end
       end
     end

@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/ui"
 require "pathname"
 require "rubygems/package"
@@ -10,7 +26,7 @@ module LogStash module PluginManager
   # - Generate the specifications
   # - Copy the data in the right folders
   class GemInstaller
-    GEM_HOME = Pathname.new(::File.join(LogStash::Environment::BUNDLE_DIR, "jruby", "1.9"))
+    GEM_HOME = Pathname.new(::File.join(LogStash::Environment::BUNDLE_DIR, "jruby", "2.5.0"))
     SPECIFICATIONS_DIR = "specifications"
     GEMS_DIR = "gems"
     CACHE_DIR = "cache"
@@ -28,8 +44,8 @@ module LogStash module PluginManager
       create_destination_folders
       extract_files
       write_specification
-      display_post_install_message
       copy_gem_file_to_cache
+      post_install_message
     end
 
     def self.install(gem_file, display_post_install_message = false, gem_home = GEM_HOME)
@@ -38,7 +54,13 @@ module LogStash module PluginManager
 
     private
     def spec
-      @gem.spec
+      gem_spec = @gem.spec
+      def gem_spec.for_cache
+        spec = dup
+        spec.test_files = nil
+        spec
+      end
+      gem_spec
     end
 
     def spec_dir
@@ -69,8 +91,8 @@ module LogStash module PluginManager
       end
     end
 
-    def display_post_install_message
-      PluginManager.ui.info(spec.post_install_message) if display_post_install_message?
+    def post_install_message
+      spec.post_install_message if display_post_install_message?
     end
 
     def display_post_install_message?

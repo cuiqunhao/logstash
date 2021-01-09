@@ -1,35 +1,26 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/environment"
-require "logstash/errors"
-if LogStash::Environment.jruby?
-  require "jrjackson"
-  require "logstash/java_integration"
-else
-  require  "oj"
-end
+require "jrjackson"
 
 module LogStash
   module Json
-    class ParserError < LogStash::Error; end
-    class GeneratorError < LogStash::Error; end
-
     extend self
-
-    ### MRI
-
-    def mri_load(data, options = {})
-      Oj.load(data)
-    rescue Oj::ParseError => e
-      raise LogStash::Json::ParserError.new(e.message)
-    end
-
-    def mri_dump(o)
-      Oj.dump(o, :mode => :compat, :use_to_json => true)
-    rescue => e
-      raise LogStash::Json::GeneratorError.new(e.message)
-    end
-
-    ### JRuby
 
     def jruby_load(data, options = {})
       # TODO [guyboertje] remove these comments in 5.0
@@ -52,9 +43,8 @@ module LogStash
       raise LogStash::Json::GeneratorError.new(e.message)
     end
 
-    prefix = LogStash::Environment.jruby? ? "jruby" : "mri"
-    alias_method :load, "#{prefix}_load".to_sym
-    alias_method :dump, "#{prefix}_dump".to_sym
+    alias_method :load, "jruby_load".to_sym
+    alias_method :dump, "jruby_dump".to_sym
 
   end
 end

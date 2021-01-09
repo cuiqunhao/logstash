@@ -1,17 +1,32 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
-require "logstash/pipeline"
-require "logstash/pipeline_reporter"
+require_relative "../support/helpers"
 require_relative "../support/mocks_classes"
 
 #TODO: Figure out how to add more tests that actually cover inflight events
 #This will require some janky multithreading stuff
-describe LogStash::PipelineReporter do
+shared_examples "a pipeline reporter" do |pipeline_setup|
   let(:generator_count) { 5 }
   let(:config) do
     "input { generator { count => #{generator_count} } } output { dummyoutput {} } "
   end
-  let(:pipeline) { LogStash::Pipeline.new(config)}
+  let(:pipeline) { Kernel.send(pipeline_setup, config)}
   let(:reporter) { pipeline.reporter }
 
   before do
@@ -20,13 +35,22 @@ describe LogStash::PipelineReporter do
     allow(LogStash::Plugin).to receive(:lookup).with("codec", "plain").and_call_original
 
     @pre_snapshot = reporter.snapshot
-    
-    pipeline.run
+
+    pipeline.start
+    # wait for stopped? so the input can produce all events
+    sleep 0.01 until pipeline.stopped?
+    pipeline.shutdown
     @post_snapshot = reporter.snapshot
   end
 
-  after do
-    pipeline.shutdown
+  describe "stalling threads info" do
+    it "should start with no stalled threads" do
+      expect(@pre_snapshot.stalling_threads_info).to eql([])
+    end
+
+    it "should end with no stalled threads" do
+      expect(@pre_snapshot.stalling_threads_info).to eql([])
+    end
   end
 
   describe "events filtered" do
@@ -57,5 +81,11 @@ describe LogStash::PipelineReporter do
     it "should be zero after running" do
       expect(@post_snapshot.inflight_count).to eql(0)
     end
+  end
+end
+
+describe LogStash::PipelineReporter do
+  context "with java execution" do
+    it_behaves_like "a pipeline reporter", :mock_java_pipeline_from_string
   end
 end

@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require 'rubygems/spec_fetcher'
 require "pluginmanager/command"
 
@@ -8,8 +24,8 @@ class LogStash::PluginManager::List < LogStash::PluginManager::Command
 
   option "--installed", :flag, "List only explicitly installed plugins using bin/logstash-plugin install ...", :default => false
   option "--verbose", :flag, "Also show plugin version number", :default => false
-  option "--group", "NAME", "Filter plugins per group: input, output, filter or codec" do |arg|
-    raise(ArgumentError, "should be one of: input, output, filter or codec") unless ['input', 'output', 'filter', 'codec', 'pack'].include?(arg)
+  option "--group", "NAME", "Filter plugins per group: input, output, filter, codec or integration" do |arg|
+    raise(ArgumentError, "should be one of: input, output, filter, codec, integration") unless ['input', 'output', 'filter', 'codec', 'pack', 'integration'].include?(arg)
     arg
   end
 
@@ -22,6 +38,16 @@ class LogStash::PluginManager::List < LogStash::PluginManager::Command
       line = "#{spec.name}"
       line += " (#{spec.version})" if verbose?
       puts(line)
+      if spec.metadata.fetch("logstash_group", "") == "integration"
+        integration_plugins = spec.metadata.fetch("integration_plugins", "").split(",")
+        integration_plugins.each_with_index do |integration_plugin, i|
+          if i == integration_plugins.size - 1
+            puts(" └── #{integration_plugin}")
+          else
+            puts(" ├── #{integration_plugin}")
+          end
+        end
+      end
     end
   end
 
@@ -32,10 +58,19 @@ class LogStash::PluginManager::List < LogStash::PluginManager::Command
 
                           # apply filters
                           specs = specs.select{|spec| gemfile.find(spec.name)} if installed?
-                          specs = specs.select{|spec| spec.name =~ /#{plugin}/i} if plugin
+                          specs = specs.select{|spec| spec_matches_search?(spec) } if plugin
                           specs = specs.select{|spec| spec.metadata['logstash_group'] == group} if group
 
                           specs
                         end
+  end
+
+  def spec_matches_search?(spec)
+    return true if spec.name =~ /#{plugin}/i
+    if LogStash::PluginManager.integration_plugin_spec?(spec)
+      LogStash::PluginManager.integration_plugin_provides(spec).any? do |provided_plugin|
+        provided_plugin =~ /#{plugin}/i
+      end
+    end
   end
 end # class Logstash::PluginManager

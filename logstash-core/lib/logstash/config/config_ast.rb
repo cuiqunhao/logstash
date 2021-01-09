@@ -1,99 +1,110 @@
-# encoding: utf-8
-require 'logstash/errors'
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+require "logstash/compiler/lscl/helpers"
 require "treetop"
 
-class Treetop::Runtime::SyntaxNode
-
-  def compile
-    return "" if elements.nil?
-    return elements.collect(&:compile).reject(&:empty?).join("")
-  end
-
-  # Traverse the syntax tree recursively.
-  # The order should respect the order of the configuration file as it is read
-  # and written by humans (and the order in which it is parsed).
-  def recurse(e, depth=0, &block)
-    r = block.call(e, depth)
-    e.elements.each { |e| recurse(e, depth + 1, &block) } if r && e.elements
-    nil
-  end
-
-  def recursive_inject(results=[], &block)
-    if !elements.nil?
-      elements.each do |element|
-        if block.call(element)
-          results << element
-        else
-          element.recursive_inject(results, &block)
-        end
-      end
-    end
-    return results
-  end
-
-  # When Treetop parses the configuration file
-  # it will generate a tree, the generated tree will contain
-  # a few `Empty` nodes to represent the actual space/tab or newline in the file.
-  # Some of theses node will point to our concrete class.
-  # To fetch a specific types of object we need to follow each branch
-  # and ignore the empty nodes.
-  def recursive_select(klass)
-    return recursive_inject { |e| e.is_a?(klass) }
-  end
-
-  def recursive_inject_parent(results=[], &block)
-    if !parent.nil?
-      if block.call(parent)
-        results << parent
-      else
-        parent.recursive_inject_parent(results, &block)
-      end
-    end
-    return results
-  end
-
-  def recursive_select_parent(results=[], klass)
-    return recursive_inject_parent(results) { |e| e.is_a?(klass) }
-  end
-end
-
+require "logstash/compiler/treetop_monkeypatches"
 
 module LogStash; module Config; module AST
+  PROCESS_ESCAPE_SEQUENCES = :process_escape_sequences
 
-  def self.defered_conditionals=(val)
-    @defered_conditionals = val
-  end
+  class << self
+    # @api private
+    MUTEX = Mutex.new
 
-  def self.defered_conditionals
-    @defered_conditionals
-  end
+    # Executes the given block with exclusive access to the AST global variables
+    #
+    # @yieldreturn [Object]: the object that is returned from the block is returned by this method
+    #
+    # @return [Object]
+    def exclusive
+      MUTEX.synchronize { yield }
+    end
 
-  def self.defered_conditionals_index
-    @defered_conditionals_index
-  end
+    def deferred_conditionals=(val)
+      ensure_exclusive!
+      @deferred_conditionals = val
+    end
 
-  def self.defered_conditionals_index=(val)
-    @defered_conditionals_index = val
-  end
+    def deferred_conditionals
+      ensure_exclusive!
+      @deferred_conditionals
+    end
 
-  def self.plugin_instance_index
-    @plugin_instance_index
-  end
+    def deferred_conditionals_index
+      ensure_exclusive!
+      @deferred_conditionals_index
+    end
 
-  def self.plugin_instance_index=(val)
-    @plugin_instance_index = val
+    def deferred_conditionals_index=(val)
+      ensure_exclusive!
+      @deferred_conditionals_index = val
+    end
+
+    def plugin_instance_index
+      ensure_exclusive!
+      @plugin_instance_index
+    end
+
+    def plugin_instance_index=(val)
+      ensure_exclusive!
+      @plugin_instance_index = val
+    end
+
+    private
+
+    # Raises a descriptive error if the thread in which it is invoked does
+    # not have exclusive access.
+    #
+    # @raise [RuntimeError]
+    def ensure_exclusive!
+      return if MUTEX.owned?
+
+      raise "Illegal access without exclusive lock at `#{caller[1]}`"
+    end
   end
 
   class Node < Treetop::Runtime::SyntaxNode
+    include LogStashCompilerLSCLGrammar::LogStash::Compiler::LSCL::AST::Helpers
+
     def text_value_for_comments
       text_value.gsub(/[\r\n]/, " ")
     end
   end
 
   class Config < Node
+    def process_escape_sequences=(val)
+      set_meta(PROCESS_ESCAPE_SEQUENCES, val)
+    end
+
+
     def compile
-      LogStash::Config::AST.defered_conditionals = []
-      LogStash::Config::AST.defered_conditionals_index = 0
+      LogStash::Config::AST.exclusive { do_compile }
+    end
+
+    private
+
+    # NON-threadsafe method compiles an AST into executable Ruby code.
+    # @see Config#compile, which is a threadsafe wrapper around this method.
+    # @api private
+    def do_compile
+      LogStash::Config::AST.deferred_conditionals = []
+      LogStash::Config::AST.deferred_conditionals_index = 0
       LogStash::Config::AST.plugin_instance_index = 0
       code = []
 
@@ -122,8 +133,9 @@ module LogStash; module Config; module AST
         # of the output/filter function
         definitions << "define_singleton_method :#{type}_func do |event|"
         definitions << "  targeted_outputs = []" if type == "output"
-        definitions << "  events = [event]" if type == "filter"
-        definitions << "  @logger.debug? && @logger.debug(\"#{type} received\", \"event\" => event.to_hash)"
+        definitions << "  events = event" if type == "filter"
+        definitions << "  @logger.debug? && @logger.debug(\"#{type} received\", \"event\" => event.to_hash)" if type == "output"
+        definitions << "  @logger.debug? && events.each { |e| @logger.debug(\"#{type} received\", \"event\" => e.to_hash)}" if type == "filter"
 
         sections.select { |s| s.plugin_type.text_value == type }.each do |s|
           definitions << s.compile.split("\n", -1).map { |e| "  #{e}" }
@@ -136,7 +148,7 @@ module LogStash; module Config; module AST
 
       code += definitions.join("\n").split("\n", -1).collect { |l| "  #{l}" }
 
-      code += LogStash::Config::AST.defered_conditionals
+      code += LogStash::Config::AST.deferred_conditionals
 
       return code.join("\n")
     end
@@ -181,7 +193,7 @@ module LogStash; module Config; module AST
               events.each{|e| block.call(e)}
             end
 
-            if @generated_objects[:#{name}].respond_to?(:flush)
+            if !@generated_objects[:#{name}].nil? && @generated_objects[:#{name}].has_flush
               @periodic_flushers << @generated_objects[:#{name}_flush] if @generated_objects[:#{name}].periodic_flush
               @shutdown_flushers << @generated_objects[:#{name}_flush]
             end
@@ -237,12 +249,12 @@ module LogStash; module Config; module AST
       # If any parent is a Plugin, this must be a codec.
 
       if attributes.elements.nil?
-        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect})" << (plugin_type == "codec" ? "" : "\n")
+        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect}, {}, line_to_source(#{source_meta.line}, #{source_meta.column}))" << (plugin_type == "codec" ? "" : "\n")
       else
         settings = attributes.recursive_select(Attribute).collect(&:compile).reject(&:empty?)
 
         attributes_code = "LogStash::Util.hash_merge_many(#{settings.map { |c| "{ #{c} }" }.join(", ")})"
-        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect}, #{attributes_code})" << (plugin_type == "codec" ? "" : "\n")
+        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect}, #{attributes_code}, line_to_source(#{source_meta.line}, #{source_meta.column}))" << (plugin_type == "codec" ? "" : "\n")
       end
     end
 
@@ -259,7 +271,7 @@ module LogStash; module Config; module AST
       when "codec"
         settings = attributes.recursive_select(Attribute).collect(&:compile).reject(&:empty?)
         attributes_code = "LogStash::Util.hash_merge_many(#{settings.map { |c| "{ #{c} }" }.join(", ")})"
-        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect}, #{attributes_code})"
+        return "plugin(#{plugin_type.inspect}, #{plugin_name.inspect}, #{attributes_code}, line_to_source(#{source_meta.line}, #{source_meta.column}))"
       end
     end
 
@@ -333,7 +345,11 @@ module LogStash; module Config; module AST
   end
   class String < Value
     def compile
-      return Unicode.wrap(text_value[1...-1])
+      if get_meta(PROCESS_ESCAPE_SEQUENCES)
+        Unicode.wrap(LogStash::Config::StringEscape.process_escapes(text_value[1...-1]))
+      else
+        Unicode.wrap(text_value[1...-1])
+      end
     end
   end
   class RegExp < Value
@@ -402,7 +418,7 @@ module LogStash; module Config; module AST
       type = recursive_select_parent(PluginSection).first.plugin_type.text_value
 
       if type == "filter"
-        i = LogStash::Config::AST.defered_conditionals_index += 1
+        i = LogStash::Config::AST.deferred_conditionals_index += 1
         source = <<-CODE
           @generated_objects[:cond_func_#{i}] = lambda do |input_events|
             result = []
@@ -415,7 +431,7 @@ module LogStash; module Config; module AST
             result
           end
         CODE
-        LogStash::Config::AST.defered_conditionals << source
+        LogStash::Config::AST.deferred_conditionals << source
 
         <<-CODE
           events = @generated_objects[:cond_func_#{i}].call(events)
@@ -530,6 +546,7 @@ module LogStash; module Config; module AST
   end
   class SelectorElement < Node; end
 end; end; end
+
 
 
 # Monkeypatch Treetop::Runtime::SyntaxNode's inspect method to skip

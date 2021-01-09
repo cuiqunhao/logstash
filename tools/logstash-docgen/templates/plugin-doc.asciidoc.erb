@@ -1,53 +1,52 @@
-[[plugins-<%= section %>s-<%= name %>]]
-=== <%= name %>
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-Version: <%=version%>
-Released on: <%=release_date%>
-<%=changelog_url%>[Changelog]
-Compatible: <%= supported_logstash %>
+:plugin: <%=name%>
+:type: <%=section%>
 
-<% unless default_plugin? %>
-NOTE: This plugin does not ship with Logstash by default, but it is easy to install by running `bin/logstash-plugin install logstash-<%= section %>-<%= name %>`.
-<% end %>
+///////////////////////////////////////////
+START - GENERATED VARIABLES, DO NOT EDIT!
+///////////////////////////////////////////
+:version: %VERSION%
+:release_date: %RELEASE_DATE%
+:changelog_url: %CHANGELOG_URL%
+:include_path: ../../../logstash/docs/include
+///////////////////////////////////////////
+END - GENERATED VARIABLES, DO NOT EDIT!
+///////////////////////////////////////////
+
+[id="plugins-{type}-{plugin}"]
+
+=== <%=name.capitalize%>
+
+include::{include_path}/plugin_header.asciidoc[]
+
+==== Description
 
 <%= description %>
 
-&nbsp;
+[id="plugins-{type}s-{plugin}-options"]
+==== <%=name.capitalize%> <%=section.capitalize%> Configuration Options
 
-==== Synopsis
+This plugin supports the following configuration options plus the <<plugins-{type}s-common-options>> described later.
 
-<% if sorted_attributes.count > 0 -%>
-This plugin supports the following configuration options:
-<% else -%>
-This plugin has no configuration options.
-<% end -%>
-
-<% if sorted_attributes.count > 0 -%>
-Required configuration options:
-<% else -%>
-Complete configuration example:
-<% end -%>
-
-[source,json]
---------------------------
-<%= name %> {
-<% if sorted_attributes.count > 0 -%>
-<% sorted_attributes.each do |name, config|
-   next if config[:deprecated]
-   next if !config[:required]
--%>
-<%= "  " if section == "codec" %>    <%= name %> => ...
-<% end -%>
-<%= "  " if section == "codec" %><% ; end -%>}
---------------------------
-
-<% if sorted_attributes.count > 0 %>
-
-Available configuration options:
-
-[cols="<,<,<,<m",options="header",]
+[cols="<,<,<",options="header",]
 |=======================================================================
-|Setting |Input type|Required|Default value
+|Setting |Input type|Required
 <% sorted_attributes.each do |name, config|
    next if config[:obsolete]
    next if config[:deprecated]
@@ -67,19 +66,14 @@ Available configuration options:
    else
      annotation += "|No"
    end
-   if config.include?(:default)
-     annotation += "|`#{config[:default].inspect}`"
-   else
-     annotation += "|"
-   end
 -%>
-| <<plugins-<%= section %>s-<%=config_name%>-<%=name%>>> <%= annotation %>
+| <<plugins-{type}s-{plugin}-<%=name%>>> <%= annotation %>
 <% end -%>
 |=======================================================================
-<% end %>
 <% if sorted_attributes.count > 0 -%>
 
-==== Details
+Also see <<plugins-{type}s-common-options>> for a list of options supported by all
+<%=section%> plugins.
 
 &nbsp;
 
@@ -93,7 +87,7 @@ Available configuration options:
        is_regexp = false
      end
 -%>
-[[plugins-<%= section%>s-<%=config_name%>-<%= name%>]]
+[id="plugins-{type}s-{plugin}-<%= name%>"]
 ===== `<%= name %>` <%= " (DEPRECATED)" if config[:deprecated] %>
 
 <% if config[:required] -%>
@@ -123,3 +117,5 @@ Available configuration options:
 <% end -%>
 
 <% end -%>
+
+include::{include_path}/{type}.asciidoc[]

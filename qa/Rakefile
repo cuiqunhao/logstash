@@ -1,6 +1,24 @@
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "rspec"
 require "rspec/core/runner"
 require "rspec/core/rake_task"
+require "stud/try"
 require_relative "vagrant/helpers"
 require_relative "platform_config"
 
@@ -22,7 +40,10 @@ namespace :qa do
     desc "Generate a valid ssh-config"
     task :ssh_config do
       require "json"
-      raw_ssh_config    = LogStash::VagrantHelpers.fetch_config.stdout.split("\n");
+      # Loop until the Vagrant box finishes SSH bootstrap
+      raw_ssh_config = Stud.try(50.times, LogStash::CommandExecutor::CommandError) do
+          LogStash::VagrantHelpers.fetch_config.stdout.split("\n");
+      end
       parsed_ssh_config = LogStash::VagrantHelpers.parse(raw_ssh_config)
       File.write(".vm_ssh_config", parsed_ssh_config.to_json)
     end
@@ -33,10 +54,12 @@ namespace :qa do
       experimental = (ENV['LS_QA_EXPERIMENTAL_OS'].to_s.downcase || "false") == "true"
       machines = config.select_names_for(args[:platform], {"experimental" => experimental})
 
-      puts user_feedback_string_for("bootstraping", args[:platform], machines, {"experimental" => experimental})
+      puts user_feedback_string_for("bootstrapping", args[:platform], machines, {"experimental" => experimental})
 
       options = {:debug => ENV['LS_QA_DEBUG']}
+      puts "Destroying #{machines}"
       LogStash::VagrantHelpers.destroy(machines, options)
+      puts "Bootstrapping #{machines}"
       LogStash::VagrantHelpers.bootstrap(machines, options)
     end
 
@@ -49,6 +72,7 @@ namespace :qa do
       puts user_feedback_string_for("halting", args[:platform], machines, {"experimental" => experimental})
       options = {:debug => ENV['LS_QA_DEBUG']}
 
+      puts "Halting #{machines}"
       LogStash::VagrantHelpers.halt(machines, options)
     end
   end

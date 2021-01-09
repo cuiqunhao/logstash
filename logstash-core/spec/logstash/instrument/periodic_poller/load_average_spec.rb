@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/instrument/periodic_poller/load_average"
 describe LogStash::Instrument::PeriodicPoller::LoadAverage do
   subject { described_class.create }
@@ -13,14 +29,10 @@ describe LogStash::Instrument::PeriodicPoller::LoadAverage do
       context "when it can read the file" do
         let(:proc_loadavg) { "0.00 0.01 0.05 3/180 29727" }
 
-        before do
-          expect(::File).to receive(:read).with("/proc/loadavg").and_return(proc_loadavg)
-        end
-
         it "return the 3 load average from `/proc/loadavg`" do
           avg_1m, avg_5m, avg_15m = proc_loadavg.chomp.split(" ")
 
-          expect(subject.get).to include(:"1m" => avg_1m.to_f, :"5m" => avg_5m.to_f, :"15m" => avg_15m.to_f)
+          expect(subject.get(proc_loadavg)).to include(:"1m" => avg_1m.to_f, :"5m" => avg_5m.to_f, :"15m" => avg_15m.to_f)
         end
       end
     end

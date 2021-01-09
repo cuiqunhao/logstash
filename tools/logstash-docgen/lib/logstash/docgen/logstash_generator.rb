@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/docgen/parser"
 require "logstash/docgen/index"
 require "logstash/docgen/util"
@@ -11,7 +27,7 @@ module LogStash module Docgen
   # This class is used to generate the documentation inside a working logstash
   # directory, it will take all the installed gemspec and gerate the documentation for them.
   #
-  # In pratice we will install **all the plugins** before running this generator.
+  # In practice we will install **all the plugins** before running this generator.
   # This class is invoked inside logstash with a rake task named: `docs:generate-plugins`
   #
   # There is also code to generate `Index` but for now we will still handle them manually.

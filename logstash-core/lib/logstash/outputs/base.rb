@@ -1,10 +1,23 @@
-# encoding: utf-8
-require "logstash/event"
-require "logstash/logging"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+
 require "logstash/plugin"
-require "logstash/namespace"
 require "logstash/config/mixin"
-require "logstash/util/wrapped_synchronous_queue"
 require "concurrent/atomic/atomic_fixnum"
 
 class LogStash::Outputs::Base < LogStash::Plugin
@@ -25,7 +38,7 @@ class LogStash::Outputs::Base < LogStash::Plugin
   # when we no longer support the :legacy type
   # This is hacky, but it can only be herne
   config :workers, :type => :number, :default => 1
-  
+
   # Set or return concurrency type
   def self.concurrency(type=nil)
     if type
@@ -69,7 +82,7 @@ class LogStash::Outputs::Base < LogStash::Plugin
     # If we're running with a single thread we must enforce single-threaded concurrency by default
     # Maybe in a future version we'll assume output plugins are threadsafe
     @single_worker_mutex = Mutex.new
-    
+
     @receives_encoded = self.methods.include?(:multi_receive_encoded)
   end
 
@@ -103,6 +116,23 @@ class LogStash::Outputs::Base < LogStash::Plugin
 
   def concurrency
     self.class.concurrency
+  end
+
+  def metric=(metric)
+    super
+    # Hack to create a new metric namespace using 'plugins' as the root
+    @codec.metric = metric.root.namespace(metric.namespace_name[0...-2].push(:codecs, codec.id))
+    metric
+  end
+
+  def execution_context=(context)
+    super
+    # Setting the execution context after initialization is deprecated and will be removed in
+    # a future release of Logstash. While this code is no longer executed from Logstash core,
+    # we continue to propagate a set execution context to an output's codec, and rely on super's
+    # deprecation warning.
+    @codec.execution_context = context
+    context
   end
 
   private

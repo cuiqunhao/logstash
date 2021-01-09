@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/utils/http_client"
 require "uri"
 
@@ -10,7 +26,7 @@ describe LogStash::PluginManager::Utils::HttpClient do
       let(:uri) { URI.parse("https://localhost:8888") }
 
       it "requires ssl" do
-        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, hash_including(:use_ssl => true))
+        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, anything, anything, anything, anything, hash_including(:use_ssl => true))
         described_class.start(uri)
       end
     end
@@ -19,7 +35,35 @@ describe LogStash::PluginManager::Utils::HttpClient do
       let(:uri) { URI.parse("http://localhost:8888") }
 
       it "doesn't requires ssl" do
-        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, hash_including(:use_ssl => false))
+        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, anything, anything, anything, anything, hash_including(:use_ssl => false))
+        described_class.start(uri)
+      end
+    end
+
+    context "with a proxy" do
+      let(:uri) { URI.parse("http://localhost:8888") }
+      let(:proxy) { "http://user:pass@host.local:8080" }
+
+      before(:each) do
+        allow(ENV).to receive(:[]).with("https_proxy").and_return(proxy)
+      end
+
+      it "sets proxy arguments" do
+        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, "host.local", 8080, "user", "pass", hash_including(:use_ssl => false))
+        described_class.start(uri)
+      end
+    end
+
+    context "without a proxy" do
+      let(:uri) { URI.parse("http://localhost:8888") }
+
+      before(:each) do
+        allow(ENV).to receive(:[]).with("https_proxy").and_return(nil)
+        allow(ENV).to receive(:[]).with("HTTPS_PROXY").and_return(nil)
+      end
+
+      it "doesn't set proxy arguments" do
+        expect(Net::HTTP).to receive(:start).with(uri.host, uri.port, nil, nil, nil, nil, hash_including(:use_ssl => false))
         described_class.start(uri)
       end
     end

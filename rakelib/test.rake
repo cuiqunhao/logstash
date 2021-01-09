@@ -1,70 +1,66 @@
-# we need to call exit explicity  in order to set the proper exit code, otherwise
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# we need to call exit explicitly  in order to set the proper exit code, otherwise
 # most common CI systems can not know whats up with this tests.
 
 require "pluginmanager/util"
+require 'pathname'
 
 namespace "test" do
 
-  task "setup" do
-
-    # make sure we have a ./data/queue dir here
-    # temporary wiring until we figure proper queue initialization sequence and in test context etc.
-    mkdir "data" unless File.directory?("data")
-    mkdir "data/queue" unless File.directory?("data/queue")
-
-    # Need to be run here as because if run aftewarse (after the bundler.setup task) then the report got wrong
-    # numbers and misses files. There is an issue with our setup! method as this does not happen with the regular
-    # bundler.setup used in regular bundler flows.
-    Rake::Task["test:setup-simplecov"].invoke if ENV['COVERAGE']
-
-    require "bootstrap/environment"
-    LogStash::Bundler.setup!({:without => [:build]})
-    require "logstash-core"
-
-    require "rspec/core/runner"
-    require "rspec"
-    require 'ci/reporter/rake/rspec_loader'
+  desc "run the java unit tests"
+  task "core-java" do
+    exit(1) unless system('./gradlew clean javaTests')
   end
 
-  def core_specs
-    # note that regardless if which logstash-core-event-* gem is live, we will always run the
-    # logstash-core-event specs since currently this is the most complete Event and Timestamp specs
-    # which actually defines the Event contract and should pass regardless of the actuall underlying
-    # implementation.
-    specs = ["spec/unit/**/*_spec.rb", "logstash-core/spec/**/*_spec.rb", "logstash-core-event/spec/**/*_spec.rb"]
-
-    # figure if the logstash-core-event-java gem is loaded and if so add its specific specs in the core specs to run
-    begin
-      require "logstash-core-event-java/version"
-      specs << "logstash-core-event-java/spec/**/*_spec.rb"
-    rescue LoadError
-      # logstash-core-event-java gem is not live, ignore and skip specs
-    end
-
-    Rake::FileList[*specs]
+  desc "run the ruby unit tests"
+  task "core-ruby" => "compliance" do
+    exit 1 unless system(*default_spec_command)
   end
 
-  desc "run core specs"
-  task "core" => ["setup"] do
-    exit(RSpec::Core::Runner.run([core_specs]))
+  desc 'run the ruby compliance tests'
+  task 'compliance' do
+    exit 1 unless system('bin/rspec', '-fd', '--patern', 'spec/compliance/**/*_spec.rb')
   end
 
-  desc "run core specs in fail-fast mode"
-  task "core-fail-fast" => ["setup"] do
-    exit(RSpec::Core::Runner.run(["--fail-fast", core_specs]))
+  desc "run all core specs"
+  task "core" => ["core-slow"]
+  
+  def default_spec_command
+    ["bin/rspec", "-fd", "--pattern", "spec/unit/**/*_spec.rb,logstash-core/spec/**/*_spec.rb"]
   end
 
-  desc "run core specs on a single file"
-  task "core-single-file", [:specfile] => ["setup"] do |t, args|
-    exit(RSpec::Core::Runner.run([Rake::FileList[args.specfile]]))
+  desc "run all core specs"
+  task "core-slow" do
+    exit 1 unless system('./gradlew clean test')
+  end
+
+  desc "run core specs excluding slower tests like stress tests"
+  task "core-fast" do
+    exit 1 unless system(*(default_spec_command.concat(["--tag", "~stress_test"])))
   end
 
   desc "run all installed plugins specs"
-  task "plugins" => ["setup"] do
+  task "plugins"  => "bootstrap" do
     plugins_to_exclude = ENV.fetch("EXCLUDE_PLUGIN", "").split(",")
-    # grab all spec files using the live plugins gem specs. this allows correclty also running the specs
+    # grab all spec files using the live plugins gem specs. this allows correctly also running the specs
     # of a local plugin dir added using the Gemfile :path option. before this, any local plugin spec would
-    # not be run because they were not under the vendor/bundle/jruby/1.9/gems path
+    # not be run because they were not under the vendor/bundle/jruby/2.0/gems path
     test_files = LogStash::PluginManager.find_plugins_gem_specs.map do |spec|
       if plugins_to_exclude.size > 0
         if !plugins_to_exclude.include?(Pathname.new(spec.gem_dir).basename.to_s)
@@ -76,41 +72,14 @@ namespace "test" do
     end.flatten.compact
 
     # "--format=documentation"
-    exit(RSpec::Core::Runner.run(["--order", "rand", test_files]))
+    exit 1 unless system(*(["bin/rspec", "-fd", "--order", "rand"].concat(test_files)))
   end
 
-  task "install-core" => ["bootstrap", "plugin:install-core", "plugin:install-development-dependencies"]
+  desc "install dev dependencies"
+  task "install-core" => ["bootstrap", "plugin:install-development-dependencies"]
 
+  desc "install default plugins and dev dependencies"
   task "install-default" => ["bootstrap", "plugin:install-default", "plugin:install-development-dependencies"]
-
-  task "install-all" => ["bootstrap", "plugin:install-all", "plugin:install-development-dependencies"]
-
-  task "install-vendor-plugins" => ["bootstrap", "plugin:install-vendor", "plugin:install-development-dependencies"]
-
-  task "install-jar-dependencies-plugins" => ["bootstrap", "plugin:install-jar-dependencies", "plugin:install-development-dependencies"]
-
-  # Setup simplecov to group files per functional modules, like this is easier to spot places with small coverage
-  task "setup-simplecov" do
-    require "simplecov"
-    SimpleCov.start do
-      # Skip non core related directories and files.
-      ["vendor/", "spec/", "bootstrap/rspec", "Gemfile", "gemspec"].each do |pattern|
-        add_filter pattern
-      end
-
-      add_group "bootstrap", "bootstrap/" # This module is used during bootstraping of LS
-      add_group "plugin manager", "pluginmanager/" # Code related to the plugin manager
-      add_group "core" do |src_file| # The LS core codebase
-        /logstash\/\w+.rb/.match(src_file.filename)
-      end
-      add_group "core-util", "logstash/util" # Set of LS utils module
-      add_group "core-config", "logstash/config" # LS Configuration modules
-      add_group "core-patches", "logstash/patches" # Patches used to overcome known issues in dependencies.
-      # LS Core plugins code base.
-      add_group "core-plugins", [ "logstash/codecs", "logstash/filters", "logstash/outputs", "logstash/inputs" ]
-    end
-    task.reenable
-  end
 end
 
 task "test" => [ "test:core" ]

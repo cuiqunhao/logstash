@@ -1,23 +1,45 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
 require "logstash/runner"
 require "stud/task"
 require "stud/trap"
 require "stud/temporary"
 require "logstash/util/java_version"
-require "logstash/logging/json"
+require "logstash/config/source_loader"
+require "logstash/config/modules_common"
+require "logstash/modules/util"
+require "logstash/elasticsearch_client"
 require "json"
-
-class NullRunner
-  def run(args); end
-end
+require_relative "../support/helpers"
+require_relative "../support/matchers"
 
 describe LogStash::Runner do
 
   subject { LogStash::Runner }
   let(:logger) { double("logger") }
+  let(:agent) { double("agent") }
 
   before :each do
+    clear_data_dir
+
+    WebMock.disable_net_connect!(allow_localhost: true)
+
     allow(LogStash::Runner).to receive(:logger).and_return(logger)
     allow(logger).to receive(:debug?).and_return(true)
     allow(logger).to receive(:subscribe).with(any_args)
@@ -30,13 +52,16 @@ describe LogStash::Runner do
     allow(LogStash::Logging::Logger).to receive(:configure_logging) do |level, path|
       allow(logger).to receive(:level).and_return(level.to_sym)
     end
+    allow(LogStash::Logging::Logger).to receive(:reconfigure).with(any_args)
+    # Make sure we don't start a real pipeline here.
+    # because we cannot easily close the pipeline
+    allow(LogStash::Agent).to receive(:new).with(any_args).and_return(agent)
+    allow(agent).to receive(:execute)
+    allow(agent).to receive(:shutdown)
   end
 
-  after :each do
-    LogStash::SETTINGS.reset
-  end
-
-  after :all do
+  after(:each) do
+    LogStash::SETTINGS.get_value("modules_list").clear
   end
 
   describe "argument precedence" do
@@ -48,15 +73,11 @@ describe LogStash::Runner do
       allow(LogStash::SETTINGS).to receive(:read_yaml).and_return(settings_yml_hash)
     end
 
-    after :each do
-      LogStash::SETTINGS.reset
-    end
-
     it "favors the last occurence of an option" do
       expect(LogStash::Agent).to receive(:new) do |settings|
         expect(settings.get("config.string")).to eq(config)
         expect(settings.get("pipeline.workers")).to eq(20)
-      end
+      end.and_return(agent)
       subject.run("bin/logstash", cli_args)
     end
   end
@@ -71,7 +92,6 @@ describe LogStash::Runner do
 
       before do
         allow(agent).to receive(:shutdown)
-        allow(agent).to receive(:register_pipeline)
       end
 
       it "should execute the agent" do
@@ -80,42 +100,31 @@ describe LogStash::Runner do
         subject.run(args)
       end
     end
-
-    context "with no arguments" do
-      let(:args) { [] }
-
-      before(:each) do
-        allow(LogStash::Util::JavaVersion).to receive(:warn_on_bad_java_version)
-      end
-
-      it "should show help" do
-        expect($stderr).to receive(:puts).once
-        expect(subject).to receive(:signal_usage_error).once.and_call_original
-        expect(subject).to receive(:show_short_help).once
-        subject.run(args)
-      end
-    end
   end
 
   context "--pluginpath" do
     subject { LogStash::Runner.new("") }
-    let(:single_path) { "/some/path" }
-    let(:multiple_paths) { ["/some/path1", "/some/path2"] }
+    let(:valid_directory) { Stud::Temporary.directory }
+    let(:invalid_directory) { "/a/path/that/doesnt/exist" }
+    let(:multiple_paths) { [Stud::Temporary.directory, Stud::Temporary.directory] }
+
+    it "should pass -p contents to the configure_plugin_paths method" do
+      args = ["-p", valid_directory]
+      expect(subject).to receive(:configure_plugin_paths).with([valid_directory])
+      expect { subject.run(args) }.to_not raise_error
+    end
 
     it "should add single valid dir path to the environment" do
-      expect(File).to receive(:directory?).and_return(true)
-      expect(LogStash::Environment).to receive(:add_plugin_path).with(single_path)
-      subject.configure_plugin_paths(single_path)
+      expect(LogStash::Environment).to receive(:add_plugin_path).with(valid_directory)
+      subject.configure_plugin_paths(valid_directory)
     end
 
     it "should fail with single invalid dir path" do
-      expect(File).to receive(:directory?).and_return(false)
       expect(LogStash::Environment).not_to receive(:add_plugin_path)
-      expect{subject.configure_plugin_paths(single_path)}.to raise_error(Clamp::UsageError)
+      expect{subject.configure_plugin_paths(invalid_directory)}.to raise_error(Clamp::UsageError)
     end
 
     it "should add multiple valid dir path to the environment" do
-      expect(File).to receive(:directory?).exactly(multiple_paths.size).times.and_return(true)
       multiple_paths.each{|path| expect(LogStash::Environment).to receive(:add_plugin_path).with(path)}
       subject.configure_plugin_paths(multiple_paths)
     end
@@ -123,7 +132,7 @@ describe LogStash::Runner do
 
   context "--auto-reload" do
     subject { LogStash::Runner.new("") }
-    context "when -f is not given" do
+    context "when -e is given" do
 
       let(:args) { ["-r", "-e", "input {} output {}"] }
 
@@ -141,13 +150,22 @@ describe LogStash::Runner do
 
     context "with a good configuration" do
       let(:pipeline_string) { "input { } filter { } output { }" }
-      it "should exit successfuly" do
+      it "should exit successfully" do
+        expect(logger).not_to receive(:fatal)
         expect(subject.run(args)).to eq(0)
       end
     end
 
     context "with a bad configuration" do
       let(:pipeline_string) { "rlwekjhrewlqrkjh" }
+      it "should fail by returning a bad exit code" do
+        expect(logger).to receive(:fatal)
+        expect(subject.run(args)).to eq(1)
+      end
+    end
+
+    context "with invalid field reference literal" do
+      let(:pipeline_string) { "input { } output { if [[f[[[oo] == [bar] { } }" }
       it "should fail by returning a bad exit code" do
         expect(logger).to receive(:fatal)
         expect(subject.run(args)).to eq(1)
@@ -164,6 +182,57 @@ describe LogStash::Runner do
       task = Stud::Task.new { 1 }
       allow(pipeline).to receive(:run).and_return(task)
       allow(pipeline).to receive(:shutdown)
+    end
+
+    context "when :path.data is defined by the user" do
+      let(:test_data_path) { "/tmp/ls-test-data" }
+      let(:test_queue_path) { test_data_path + "/" + "queue" }
+      let(:test_dlq_path) { test_data_path + "/" + "dead_letter_queue" }
+
+      it "should set data paths" do
+        expect(LogStash::Agent).to receive(:new) do |settings|
+          expect(settings.get("path.data")).to eq(test_data_path)
+          expect(settings.get("path.queue")).to eq(test_queue_path)
+          expect(settings.get("path.dead_letter_queue")).to eq(test_dlq_path)
+        end
+
+        args = ["--path.data", test_data_path, "-e", pipeline_string]
+        subject.run("bin/logstash", args)
+      end
+
+      context "and path.queue is manually set" do
+        let(:queue_override_path) { "/tmp/queue-override_path" }
+
+        it "should set data paths" do
+          LogStash::SETTINGS.set("path.queue", queue_override_path)
+
+          expect(LogStash::Agent).to receive(:new) do |settings|
+            expect(settings.get("path.data")).to eq(test_data_path)
+            expect(settings.get("path.queue")).to eq(queue_override_path)
+          end
+
+
+
+          args = ["--path.data", test_data_path, "-e", pipeline_string]
+          subject.run("bin/logstash", args)
+        end
+      end
+
+      context "and path.dead_letter_queue is manually set" do
+        let(:queue_override_path) { "/tmp/queue-override_path" }
+
+        it "should set data paths" do
+          expect(LogStash::Agent).to receive(:new) do |settings|
+            expect(settings.get("path.data")).to eq(test_data_path)
+            expect(settings.get("path.dead_letter_queue")).to eq(queue_override_path)
+          end
+
+          LogStash::SETTINGS.set("path.dead_letter_queue", queue_override_path)
+
+          args = ["--path.data", test_data_path, "-e", pipeline_string]
+          subject.run("bin/logstash", args)
+        end
+      end
     end
 
     context "when :http.host is defined by the user" do
@@ -254,6 +323,9 @@ describe LogStash::Runner do
     end
 
     describe "config.debug" do
+      after(:each) do
+        LogStash::SETTINGS.set("config.debug", false)
+      end
       it "should set 'config.debug' to false by default" do
         expect(LogStash::Agent).to receive(:new) do |settings|
           expect(settings.get("config.debug")).to eq(false)
@@ -268,6 +340,116 @@ describe LogStash::Runner do
         end
         args = ["--log.level", "debug", "--config.debug",  "-e", pipeline_string]
         subject.run("bin/logstash", args)
+      end
+    end
+  end
+
+  describe "logstash modules" do
+    before(:each) do
+      test_modules_dir = File.expand_path(File.join(File.dirname(__FILE__), "..", "modules_test_files"))
+      LogStash::Modules::Util.register_local_modules(test_modules_dir)
+    end
+
+    describe "--config.test_and_exit" do
+      subject { LogStash::Runner.new("") }
+      let(:args) { ["-t", "--modules", module_string] }
+
+      context "with a good configuration" do
+        let(:module_string) { "tester" }
+        it "should exit successfully" do
+          expect(logger).not_to receive(:fatal)
+          expect(subject.run(args)).to eq(0)
+        end
+      end
+
+      context "with a bad configuration" do
+        let(:module_string) { "rlwekjhrewlqrkjh" }
+        it "should fail by returning a bad exit code" do
+          expect(logger).to receive(:fatal)
+          expect(subject.run(args)).to eq(1)
+        end
+      end
+    end
+
+    describe "--modules" do
+      let(:args) { ["--modules", module_string, "--setup"] }
+
+      context "with an available module specified but no connection to elasticsearch" do
+        let(:module_string) { "tester" }
+        before do
+          expect(logger).to receive(:fatal) do |msg, hash|
+            expect(msg).to eq("An unexpected error occurred!")
+            expect(hash).to be_a_config_loading_error_hash(
+              /Failed to import module configurations to Elasticsearch and\/or Kibana. Module: tester has/)
+          end
+          expect(LogStash::Agent).to receive(:new) do |settings, source_loader|
+            pipelines = LogStash::Config::ModulesCommon.pipeline_configs(settings)
+            expect(pipelines).to eq([])
+            agent
+          end
+        end
+        it "should log fatally and return a bad exit code" do
+          expect(subject.run("bin/logstash", args)).to eq(1)
+        end
+      end
+
+      context "with an available module specified and a mocked connection to elasticsearch" do
+        let(:module_string) { "tester" }
+        let(:kbn_version) { "6.0.0" }
+        let(:esclient) { double(:esclient) }
+        let(:kbnclient) { double(:kbnclient) }
+        let(:response) { double(:response) }
+        before do
+          allow(response).to receive(:status).and_return(404)
+          allow(esclient).to receive(:head).and_return(response)
+          allow(esclient).to receive(:can_connect?).and_return(true)
+          allow(kbnclient).to receive(:version).and_return(kbn_version)
+          allow(kbnclient).to receive(:version_parts).and_return(kbn_version.split('.'))
+          allow(kbnclient).to receive(:can_connect?).and_return(true)
+          allow(LogStash::ElasticsearchClient).to receive(:build).and_return(esclient)
+          allow(LogStash::Modules::KibanaClient).to receive(:new).and_return(kbnclient)
+
+          expect(esclient).to receive(:put).once do |path, content|
+            LogStash::ElasticsearchClient::Response.new(201, "", {})
+          end
+          expect(kbnclient).to receive(:post).twice do |path, content|
+            LogStash::Modules::KibanaClient::Response.new(201, "", {})
+          end
+
+          expect(LogStash::Agent).to receive(:new) do |settings, source_loader|
+            pipelines = LogStash::Config::ModulesCommon.pipeline_configs(settings)
+            expect(pipelines).not_to be_empty
+            module_pipeline = pipelines.first
+            expect(module_pipeline).to include("pipeline_id", "config_string")
+            expect(module_pipeline["pipeline_id"]).to include('tester')
+            expect(module_pipeline["config_string"]).to include('index => "tester-')
+            agent
+          end
+          expect(logger).not_to receive(:fatal)
+          expect(logger).not_to receive(:error)
+        end
+        it "should not terminate logstash" do
+          expect(subject.run("bin/logstash", args)).to be_nil
+        end
+      end
+
+      context "with an unavailable module specified" do
+        let(:module_string) { "fancypants" }
+        before do
+          expect(logger).to receive(:fatal) do |msg, hash|
+            expect(msg).to eq("An unexpected error occurred!")
+            expect(hash).to be_a_config_loading_error_hash(
+              /The modules specified are not available yet. Specified modules: \["fancypants"\] Available modules:/)
+          end
+          expect(LogStash::Agent).to receive(:new) do |settings, source_loader|
+            pipelines = LogStash::Config::ModulesCommon.pipeline_configs(settings)
+            expect(pipelines).to eq([])
+            agent
+          end
+        end
+        it "should log fatally and return a bad exit code" do
+          expect(subject.run("bin/logstash", args)).to eq(1)
+        end
       end
     end
   end
@@ -351,10 +533,12 @@ describe LogStash::Runner do
   describe "path.settings" do
     subject { LogStash::Runner.new("") }
     context "if does not exist" do
-      let(:args) { ["--path.settings", "/tmp/a/a/a/a", "-e", "input {} output {}"] }
+      let(:args) { ["--path.settings", "/tmp/a/a/a/a", "-e", "input { generator { count => 1000 }} output {}"] }
 
       it "should not terminate logstash" do
-        expect(subject.run(args)).to eq(nil)
+        # The runner should just pass the code from the agent execute
+        allow(agent).to receive(:execute).and_return(0)
+        expect(subject.run(args)).to eq(0)
       end
 
       context "but if --help is passed" do

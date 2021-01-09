@@ -1,5 +1,20 @@
-# encoding: utf-8
-# require "logstash/json"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/webserver"
 require_relative "../support/helpers"
 require "socket"
@@ -12,17 +27,13 @@ def block_ports(range)
 
   range.each do |port|
     begin
-      server = TCPServer.new("localhost", port)
-      Thread.new do
-        client = server.accept rescue nil
-      end
+      server = TCPServer.new("127.0.0.1", port)
       servers << server
     rescue => e
       # The port can already be taken
     end
   end
 
-  sleep(1)
   servers
 end
 
@@ -49,7 +60,7 @@ describe LogStash::WebServer do
 
   subject { LogStash::WebServer.new(logger,
                                     agent,
-                                    { :http_host => "localhost", :http_ports => port_range })}
+                                    { :http_host => "127.0.0.1", :http_ports => port_range })}
 
   let(:port_range) { 10000..10010 }
 
@@ -57,6 +68,7 @@ describe LogStash::WebServer do
     let(:spy_output) { spy("stderr").as_null_object }
 
     it "should not log to STDERR" do
+      skip("This test fails randomly, tracked in https://github.com/elastic/logstash/issues/9361.")
       backup_stderr = STDERR
       backup_stdout = STDOUT
 
@@ -78,7 +90,8 @@ describe LogStash::WebServer do
       sleep(1)
 
       # We cannot use stop here, since the code is stuck in an infinite loop
-      t.kill rescue nil
+      t.kill
+      t.join
 
       silence_warnings do
         STDERR = backup_stderr
@@ -91,8 +104,9 @@ describe LogStash::WebServer do
     after(:each) { free_ports(@servers) }
 
     context "when we have available ports" do
+      let(:blocked_range) { 10000..10005 }
       before(:each) do
-        @servers = block_ports(10000..10005)
+        @servers = block_ports(blocked_range)
       end
 
       it "successfully find an available port" do
@@ -101,13 +115,16 @@ describe LogStash::WebServer do
         end
 
         sleep(1)
+        address = subject.address
+        port = address.split(":").last.to_i
+        expect(port_range).to cover(port)
+        expect(blocked_range).to_not cover(port)
 
-        response = open("http://localhost:10006").read
+        response = open("http://#{address}").read
         expect { LogStash::Json.load(response) }.not_to raise_error
-        expect(subject.address).to eq("localhost:10006")
 
         subject.stop
-        t.kill rescue nil
+        t.join
       end
     end
 
@@ -139,7 +156,7 @@ describe LogStash::IOWrappedLogger do
     expect(logger).to have_received(:debug).with(message)
   end
 
-  it "reponds to <<" do
+  it "responds to <<" do
     subject << message
     expect(logger).to have_received(:debug).with(message)
   end

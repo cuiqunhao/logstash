@@ -1,13 +1,28 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/command"
 require "jar-dependencies"
 require "jar_install_post_install_hook"
-require "file-dependencies/gem"
 
 class LogStash::PluginManager::Update < LogStash::PluginManager::Command
   REJECTED_OPTIONS = [:path, :git, :github]
   # These are local gems used by LS and needs to be filtered out of other plugin gems
-  NON_PLUGIN_LOCAL_GEMS = ["logstash-core", "logstash-core-event-java", "logstash-core-plugin-api"]
+  NON_PLUGIN_LOCAL_GEMS = ["logstash-core", "logstash-core-plugin-api"]
 
   parameter "[PLUGIN] ...", "Plugin name(s) to upgrade to latest version", :attribute_name => :plugins_arg
   option "--[no-]verify", :flag, "verify plugin validity before installation", :default => true
@@ -46,7 +61,7 @@ class LogStash::PluginManager::Update < LogStash::PluginManager::Command
     previous_gem_specs_map = find_latest_gem_specs
 
     # remove any version constrain from the Gemfile so the plugin(s) can be updated to latest version
-    # calling update without requiremend will remove any previous requirements
+    # calling update without requirements will remove any previous requirements
     plugins = plugins_to_update(previous_gem_specs_map)
     # Skipping the major version validation when using a local cache as we can have situations
     # without internet connection.

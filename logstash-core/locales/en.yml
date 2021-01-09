@@ -8,6 +8,10 @@ en:
   logstash:
     error: >-
       Error: %{error}
+    bootstrap_check:
+      persisted_queue_config:
+        page-capacity: >-
+          Invalid configuration, 'queue.page_capacity' must be less than or equal to 'queue.max_bytes'
     environment:
       jruby-required:  >-
         JRuby is required
@@ -16,10 +20,12 @@ en:
     pipeline:
       worker-error: |-
         A plugin had an unrecoverable error. Will restart this plugin.
+          Pipeline_id:%{pipeline_id}
           Plugin: %{plugin}
           Error: %{error}
       worker-error-debug: |-
         A plugin had an unrecoverable error. Will restart this plugin.
+          Pipeline_id:%{pipeline_id}
           Plugin: %{plugin}
           Error: %{error}
           Exception: %{exception}
@@ -56,9 +62,9 @@ en:
       sighup: >-
         SIGHUP received.
       sigint: >-
-        SIGINT received. Shutting down the agent.
+        SIGINT received. Shutting down.
       sigterm: >-
-        SIGTERM received. Shutting down the agent.
+        SIGTERM received. Shutting down.
       slow_shutdown: |-
         Received shutdown signal, but pipeline is still waiting for in-flight events
         to be processed. Sending another ^C will force quit Logstash, but this may cause
@@ -71,22 +77,45 @@ en:
         Logstash is not able to start since configuration auto reloading was enabled but the configuration contains plugins that don't support it. Quitting...
     web_api:
       cant_bind_to_port: |-
-        Logstash tried to bind to port %{port}, but the port is already in use. You can specify a new port by launching logtash with the --http.port option."
+        Logstash tried to bind to port %{port}, but the port is already in use. You can specify a new port by launching logstash with the --http.port option."
       cant_bind_to_port_in_range: |-
-        Logstash tried to bind to port range %{http_ports}, but all the ports are already in use. You can specify a new port by launching logtash with the --http.port option."
+        Logstash tried to bind to port range %{http_ports}, but all the ports are already in use. You can specify a new port by launching logstash with the --http.port option."
       hot_threads:
         title: |-
           ::: {%{hostname}}
           Hot threads at %{time}, busiestThreads=%{top_count}:
         thread_title: |-
-          %{percent_of_cpu_time} % of cpu usage, state: %{thread_state}, thread name: '%{thread_name}'
+          %{percent_of_cpu_time} % of cpu usage, state: %{thread_state}, thread name: '%{thread_name}', thread id: %{thread_id}
       logging:
         unrecognized_option: |-
           unrecognized option [%{option}]
+    modules:
+      configuration:
+        parse-failed: |-
+          Failed to parse the module configuration: [%{error}]
+        modules-must-be-unique: >-
+          Only a single instance of any module can be run at a time. Duplicate
+          modules: %{duplicate_modules}
+        modules-invalid-name: >-
+          Invalid module name: %{module_name}
+        modules-variables-malformed: >-
+          Failed to parse module variable %{rawvar}.  Must be in -M
+          "MODULE_NAME.KEY.SUBKEY=VALUE" format
+        modules-unavailable: >-
+          The modules specified are not available yet.
+          Specified modules: %{specified_modules}
+          Available modules: %{available_modules}
+        elasticsearch_connection_failed: >-
+          Failed to import module configurations to Elasticsearch and/or Kibana.
+          Module: %{module_name} has Elasticsearch hosts: %{elasticsearch_hosts} and Kibana hosts: %{kibana_hosts}
+        modules-too-many-specified: >-
+          Too many modules specified. Maximum allowed: %{max}, specified: %{specified_modules}
+
     runner:
       short-help: |-
         usage:
           bin/logstash -f CONFIG_PATH [-t] [-r] [] [-w COUNT] [-l LOG]
+          bin/logstash --modules MODULE_NAME [-M "MODULE_NAME.var.PLUGIN_TYPE.PLUGIN_NAME.VARIABLE_NAME=VALUE"] [-t] [-w COUNT] [-l LOG]
           bin/logstash -e CONFIG_STR [-t] [--log.level fatal|error|warn|info|debug|trace] [-w COUNT] [-l LOG]
           bin/logstash -i SHELL [--log.level fatal|error|warn|info|debug|trace]
           bin/logstash -V [--log.level fatal|error|warn|info|debug|trace]
@@ -96,8 +125,28 @@ en:
       missing-configuration: >-
         No configuration file was specified. Perhaps you forgot to provide
         the '-f yourlogstash.conf' flag?
+      config-string-path-exclusive:
+        Settings 'path.config' (-f) and 'config.string' (-e) can't be used simultaneously.
+      config-module-exclusive: >-
+        Settings 'path.config' (-f) or 'config.string' (-e) can't be used in conjunction with
+        (--modules) or the "modules:" block in the logstash.yml file.
+      reload-with-modules: >-
+        Configuration reloading can't be used with command-line or logstash.yml specified modules.
+      cli-module-override: >-
+        Both command-line and logstash.yml modules configurations detected.
+        Using command-line module configuration to override logstash.yml module configuration.
+      config-pipelines-failed-read: >-
+        Failed to read pipelines yaml file. Location: %{path}
+      config-pipelines-empty: >-
+        Pipelines YAML file is empty. Location: %{path}
+      config-pipelines-invalid: >-
+        Pipelines YAML file must contain an array of pipeline configs. Found "%{invalid_class}" in %{path}
       reload-without-config-path: >-
         Configuration reloading also requires passing a configuration path with '-f yourlogstash.conf'
+      reload-with-config-string: >-
+        Configuration reloading can't be used with 'config.string' (-e).
+      locked-data-path: >-
+        Logstash could not be started because there is already another instance using the configured data directory.  If you wish to run multiple instances, you must change the "path.data" setting.
       invalid-shell: >-
         Invalid option for interactive Ruby shell. Use either "irb" or "pry"
       configtest-flag-information: |-
@@ -179,12 +228,65 @@ en:
           "%{default_output}"
           If you wish to use both defaults, please use
           the empty string for the '-e' flag.
+        modules: |+
+          Load Logstash modules.
+          Modules can be defined using multiple instances
+          '--modules module1 --modules module2',
+             or comma-separated syntax
+          '--modules=module1,module2'
+          Cannot be used in conjunction with '-e' or '-f'
+          Use of '--modules' will override modules declared
+          in the 'logstash.yml' file.
+        modules_variable: |+
+          Load variables for module template.
+          Multiple instances of '-M' or
+          '--modules.variable' are supported.
+          Ignored if '--modules' flag is not used.
+          Should be in the format of
+          '-M "MODULE_NAME.var.PLUGIN_TYPE.PLUGIN_NAME.VARIABLE_NAME=VALUE"'
+          as in
+          '-M "example.var.filter.mutate.fieldname=fieldvalue"'
+        modules_setup: |+
+          Load index template into Elasticsearch, and saved searches, 
+          index-pattern, visualizations, and dashboards into Kibana when
+          running modules.
+        cloud_id: |+
+          Sets the elasticsearch and kibana host settings for
+          module connections in Elastic Cloud.
+          Your Elastic Cloud User interface or the Cloud support
+          team should provide this.
+          Add an optional label prefix '<label>:' to help you
+          identify multiple cloud.ids.
+          e.g. 'staging:dXMtZWFzdC0xLmF3cy5mb3VuZC5pbyRub3RhcmVhbCRpZGVudGlmaWVy'
+        cloud_auth: |+
+          Sets the elasticsearch and kibana username and password
+          for module connections in Elastic Cloud
+          e.g. 'username:<password>'
         configtest: |+
           Check configuration for valid syntax and then exit.
+        http_enabled: |+
+          Can be used to disable the Web API, which is
+          enabled by default.
         http_host: Web API binding host
         http_port: Web API http port
+        pipeline-id: |+
+          Sets the ID of the pipeline.
         pipeline-workers: |+
           Sets the number of pipeline workers to run.
+        pipeline-ordered: |+
+          Preserve events order. Possible values are `auto` (default), `true` and `false`.
+          This setting
+          will only work when also using a single worker for the pipeline.
+          Note that when enabled, it may impact the performance of the filters
+          and ouput processing.
+          The `auto` option will automatically enable ordering if the
+          `pipeline.workers` setting is set to `1`.
+          Use `true` to enable ordering on the pipeline and prevent logstash
+          from starting if there are multiple workers.
+          Use `false` to disable any extra processing necessary for preserving
+          ordering.
+        plugin-classloaders: |+
+          (Beta) Load Java plugins in independent classloaders to isolate their dependencies.
         pipeline-batch-size: |+
           Size of batches the pipeline is to work in.
         pipeline-batch-delay: |+
@@ -240,14 +342,27 @@ en:
           if there are still inflight events in memory.
           By default, logstash will refuse to quit until all
           received events have been pushed to the outputs.
+        ecs_compatibility: |+
+          Sets the pipeline's default value for `ecs_compatibility`,
+          a setting that is available to plugins that implement
+          an ECS Compatibility mode for use with the Elastic Common
+          Schema.
+          Possible values are:
+           - disabled (default)
+           - v1
+           - v2
+          This option allows the early opt-in (or preemptive opt-out)
+          of ECS Compatibility modes in plugins, which is scheduled to
+          be on-by-default in a future major release of Logstash.
+
+          Values other than `disabled` are currently considered BETA,
+          and may produce unintended consequences when upgrading Logstash.
         rubyshell: |+
           Drop to shell instead of running as normal.
           Valid shells are "irb" and "pry"
         name: |+
           Specify the name of this logstash instance, if no value is given
           it will default to the current hostname.
-        agent: |+
-          Specify an alternate agent plugin name.
         config_debug: |+
           Print the compiled config ruby code out as a debug log (you must also have --log.level=debug enabled).
           WARNING: This will include any 'password' options passed to plugin configs as plaintext, and may result
@@ -263,4 +378,4 @@ en:
           DEPRECATED: use --log.level=info instead.
         quiet: |+
           Set the log level to info.
-          DEPRECATED: use --log.level=quiet instead.
+          DEPRECATED: use --log.level=info instead.

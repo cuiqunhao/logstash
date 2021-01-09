@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "concurrent"
 require "logstash/instrument/metric_type"
 require "thread"
@@ -41,26 +57,26 @@ module LogStash module Instrument
     # @param [Symbol] The metric key
     # @return [Object] Return the new_value of the retrieve object in the tree
     def fetch_or_store(namespaces, key, default_value = nil)
-      provided_value =  block_given? ? yield(key) : default_value
 
       # We first check in the `@fast_lookup` store to see if we have already see that metrics before,
       # This give us a `o(1)` access, which is faster than searching through the structured
       # data store (Which is a `o(n)` operation where `n` is the number of element in the namespace and
-      # the value of the key). If the metric is already present in the `@fast_lookup`, the call to
-      # `#put_if_absent` will return the value. This value is send back directly to the caller.
+      # the value of the key). If the metric is already present in the `@fast_lookup`, then that value is sent
+      # back directly to the caller.
       #
-      # BUT. If the value is not present in the `@fast_lookup` the value will be inserted and
-      # `#puf_if_absent` will return nil. With this returned value of nil we assume that we don't
+      # BUT. If the value is not present in the `@fast_lookup` the value will be inserted and we assume that we don't
       # have it in the `@metric_store` for structured search so we add it there too.
-      if found_value = @fast_lookup.put_if_absent([namespaces, key], provided_value)
-        return found_value
-      else
+
+      value = @fast_lookup.get(namespaces.dup << key)
+      if value.nil?
+        value = block_given? ? yield(key) : default_value
+        @fast_lookup.put(namespaces.dup << key, value)
         @structured_lookup_mutex.synchronize do
-          # If we cannot find the value this mean we need to save it in the store.
-          fetch_or_store_namespaces(namespaces).fetch_or_store(key, provided_value)
+            # If we cannot find the value this mean we need to save it in the store.
+          fetch_or_store_namespaces(namespaces).fetch_or_store(key, value)
         end
-        return provided_value
       end
+      return value;
     end
 
     # This method allow to retrieve values for a specific path,
@@ -73,7 +89,7 @@ module LogStash module Instrument
     # If you use the `,` on a key the metric store will return the both values at that level
     #
     # The returned hash will keep the same structure as it had in the `Concurrent::Map`
-    # but will be a normal ruby hash. This will allow the api to easily seriliaze the content
+    # but will be a normal ruby hash. This will allow the api to easily serialize the content
     # of the map
     #
     # @param [Array] The path where values should be located
@@ -131,7 +147,7 @@ module LogStash module Instrument
     # }
     def extract_metrics(path, *keys)
       keys.reduce({}) do |acc,k|
-        # Simplifiy 1-length keys
+        # Simplify 1-length keys
         k = k.first if k.is_a?(Array) && k.size == 1
 
         # If we have array values here we need to recurse
@@ -162,6 +178,10 @@ module LogStash module Instrument
       end
     end    
 
+    def has_metric?(*path)
+      @fast_lookup[path]
+    end
+
     # Return all the individuals Metric,
     # This call mimic a Enum's each if a block is provided
     #
@@ -179,9 +199,9 @@ module LogStash module Instrument
     alias_method :all, :each
 
     def prune(path)
-      key_paths = key_paths(path).map {|k| k.to_sym }
+      key_paths = key_paths(path).map(&:to_sym)
       @structured_lookup_mutex.synchronize do
-        keys_to_delete = @fast_lookup.keys.select {|namespace, _| (key_paths - namespace).empty? }
+        keys_to_delete = @fast_lookup.keys.select {|namespace| (key_paths - namespace[0..-2]).empty? }
         keys_to_delete.each {|k| @fast_lookup.delete(k) }
         delete_from_map(@store, key_paths)
       end
@@ -202,7 +222,7 @@ module LogStash module Instrument
 
     # This method take an array of keys and recursively search the metric store structure
     # and return a filtered hash of the structure. This method also take into consideration
-    # getting two different branchs.
+    # getting two different branches.
     #
     #
     # If one part of the `key_paths` contains a filter key with the following format.
@@ -218,7 +238,7 @@ module LogStash module Instrument
       key_candidates = extract_filter_keys(key_paths.shift)
 
       key_candidates.each do |key_candidate|
-        raise MetricNotFound, "For path: #{key_candidate}" if map[key_candidate].nil?
+        raise MetricNotFound, "For path: #{key_candidate}. Map keys: #{map.keys}" if map[key_candidate].nil?
 
         if key_paths.empty? # End of the user requested path
           if map[key_candidate].is_a?(Concurrent::Map)
@@ -298,7 +318,7 @@ module LogStash module Instrument
     #
     # @param [Concurrent::Map] Map to search for the key
     # @param [Array] List of path to create
-    # @param [Fixnum] Which part from the list to create
+    # @param [Integer] Which part from the list to create
     #
     def fetch_or_store_namespace_recursively(map, namespaces_path, idx = 0)
       current = namespaces_path[idx]

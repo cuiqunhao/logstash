@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
 require "logstash/instrument/periodic_poller/jvm"
 require "logstash/instrument/collector"
@@ -44,12 +60,47 @@ describe LogStash::Instrument::PeriodicPoller::JVM do
         before do
           expect(LogStash::Environment).to receive(:windows?).and_return(false)
           expect(LogStash::Environment).to receive(:linux?).and_return(true)
-          expect(::File).to receive(:read).with("/proc/loadavg").and_raise("Didnt work out so well")
+          expect(::File).to receive(:read).with("/proc/loadavg").at_least(:once).and_raise("Didnt work out so well")
         end
 
         it "doesn't raise an exception" do
           expect { subject.collect }.not_to raise_error
         end
+      end
+    end
+  end
+
+  describe "aggregate heap information" do
+    shared_examples "heap_information" do
+      let(:data_set) do
+        {
+          "usage.used" => 5,
+          "usage.committed" => 11,
+          "usage.max" => 21,
+          "peak.max" => 51,
+          "peak.used" => 61
+        }
+      end
+      let(:collection) { [data_set] }
+
+      it "return the right values" do
+        expect(subject.aggregate_information_for(collection)).to match({
+          :used_in_bytes => 5 * collection.size,
+          :committed_in_bytes => 11 * collection.size,
+          :max_in_bytes => 21 * collection.size,
+          :peak_max_in_bytes => 51 * collection.size,
+          :peak_used_in_bytes => 61 * collection.size
+        })
+      end
+    end
+
+    context "with only one data set in a collection" do
+      include_examples "heap_information"
+    end
+
+    context "with multiples data set in a collection" do
+      include_examples "heap_information" do
+        let(:collection) { ar = []; ar << data_set; ar << data_set; ar }
       end
     end
   end

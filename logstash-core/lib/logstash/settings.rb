@@ -1,11 +1,65 @@
-# encoding: utf-8
-require "logstash/util/loggable"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "fileutils"
 require "logstash/util/byte_value"
+require "logstash/util/substitution_variables"
 require "logstash/util/time_value"
 
 module LogStash
   class Settings
+
+    include LogStash::Util::SubstitutionVariables
+    include LogStash::Util::Loggable
+
+    # there are settings that the pipeline uses and can be changed per pipeline instance
+    PIPELINE_SETTINGS_WHITE_LIST = [
+      "config.debug",
+      "config.support_escapes",
+      "config.reload.automatic",
+      "config.reload.interval",
+      "config.string",
+      "dead_letter_queue.enable",
+      "dead_letter_queue.flush_interval",
+      "dead_letter_queue.max_bytes",
+      "metric.collect",
+      "pipeline.plugin_classloaders",
+      "path.config",
+      "path.dead_letter_queue",
+      "path.queue",
+      "pipeline.batch.delay",
+      "pipeline.batch.size",
+      "pipeline.id",
+      "pipeline.reloadable",
+      "pipeline.system",
+      "pipeline.workers",
+      "pipeline.ordered",
+      "pipeline.ecs_compatibility",
+      "queue.checkpoint.acks",
+      "queue.checkpoint.interval",
+      "queue.checkpoint.writes",
+      "queue.checkpoint.retry",
+      "queue.drain",
+      "queue.max_bytes",
+      "queue.max_events",
+      "queue.page_capacity",
+      "queue.type",
+    ]
+
 
     def initialize
       @settings = {}
@@ -24,9 +78,13 @@ module LogStash
       end
     end
 
+    def registered?(setting_name)
+       @settings.key?(setting_name)
+    end
+
     def get_setting(setting_name)
       setting = @settings[setting_name]
-      raise ArgumentError.new("Setting \"#{setting_name}\" hasn't been registered") if setting.nil?
+      raise ArgumentError.new("Setting \"#{setting_name}\" doesn't exist. Please check if you haven't made a typo.") if setting.nil?
       setting
     end
 
@@ -47,6 +105,7 @@ module LogStash
     def clone
       get_subset(".*")
     end
+    alias_method :dup, :clone
 
     def get_default(setting_name)
       get_setting(setting_name).default
@@ -81,6 +140,15 @@ module LogStash
       self
     end
 
+    def merge_pipeline_settings(hash, graceful = false)
+      hash.each do |key, _|
+        unless PIPELINE_SETTINGS_WHITE_LIST.include?(key)
+          raise ArgumentError.new("Only pipeline related settings are expected. Received \"#{key}\". Allowed settings: #{PIPELINE_SETTINGS_WHITE_LIST}")
+        end
+      end
+      merge(hash, graceful)
+    end
+
     def format_settings
       output = []
       output << "-------- Logstash Settings (* means modified) ---------"
@@ -105,9 +173,23 @@ module LogStash
       @settings.values.each(&:reset)
     end
 
-    def from_yaml(yaml_path)
-      settings = read_yaml(::File.join(yaml_path, "logstash.yml"))
-      self.merge(flatten_hash(settings), true)
+    def from_yaml(yaml_path, file_name="logstash.yml")
+      settings = read_yaml(::File.join(yaml_path, file_name))
+      self.merge(deep_replace(flatten_hash(settings)), true)
+      self
+    end
+
+    def post_process
+      if @post_process_callbacks
+        @post_process_callbacks.each do |callback|
+          callback.call(self)
+        end
+      end
+    end
+
+    def on_post_process(&block)
+      @post_process_callbacks ||= []
+      @post_process_callbacks << block
     end
 
     def validate_all
@@ -117,6 +199,11 @@ module LogStash
       @settings.each do |name, setting|
         setting.validate_value
       end
+    end
+
+    def ==(other)
+      return false unless other.kind_of?(::LogStash::Settings)
+      self.to_hash == other.to_hash
     end
 
     private
@@ -341,7 +428,7 @@ module LogStash
         case value
         when ::Range
           value
-        when ::Fixnum
+        when ::Integer
           value..value
         when ::String
           first, last = value.split(PORT_SEPARATOR)
@@ -395,6 +482,28 @@ module LogStash
       end
     end
 
+    # The CoercibleString allows user to enter any value which coerces to a String.
+    # For example for true/false booleans; if the possible_strings are ["foo", "true", "false"]
+    # then these options in the config file or command line will be all valid: "foo", true, false, "true", "false"
+    #
+    class CoercibleString < Coercible
+      def initialize(name, default=nil, strict=true, possible_strings=[], &validator_proc)
+        @possible_strings = possible_strings
+        super(name, Object, default, strict, &validator_proc)
+      end
+
+      def coerce(value)
+        value.to_s
+      end
+
+      def validate(value)
+        super(value)
+        unless @possible_strings.empty? || @possible_strings.include?(value)
+          raise ArgumentError.new("Invalid value \"#{value}\". Options are: #{@possible_strings.inspect}")
+        end
+      end
+    end
+
     class ExistingFilePath < Setting
       def initialize(name, default=nil, strict=true)
         super(name, ::String, default, strict) do |file_path|
@@ -411,7 +520,7 @@ module LogStash
       def initialize(name, default=nil, strict=false)
         super(name, ::String, default, strict)
       end
-      
+
       def validate(path)
         super(path)
 
@@ -454,11 +563,11 @@ module LogStash
 
     class Bytes < Coercible
       def initialize(name, default=nil, strict=true)
-        super(name, ::Fixnum, default, strict=true) { |value| valid?(value) }
+        super(name, ::Integer, default, strict=true) { |value| valid?(value) }
       end
 
       def valid?(value)
-        value.is_a?(Fixnum) && value >= 0
+        value.is_a?(::Integer) && value >= 0
       end
 
       def coerce(value)
@@ -480,13 +589,92 @@ module LogStash
     end
 
     class TimeValue < Coercible
+      include LogStash::Util::Loggable
+
       def initialize(name, default, strict=true, &validator_proc)
-        super(name, ::Fixnum, default, strict, &validator_proc)
+        super(name, Util::TimeValue, default, strict, &validator_proc)
       end
 
       def coerce(value)
-        return value if value.is_a?(::Fixnum)
-        Util::TimeValue.from_value(value).to_nanos
+        if value.is_a?(::Integer)
+          deprecation_logger.deprecated("Integer value for `#{name}` does not have a time unit and will be interpreted in nanoseconds. " +
+                                        "Time units will be required in a future release of Logstash. " +
+                                        "Acceptable unit suffixes are: `d`, `h`, `m`, `s`, `ms`, `micros`, and `nanos`.")
+
+          return Util::TimeValue.new(value, :nanosecond)
+        end
+
+        Util::TimeValue.from_value(value)
+      end
+    end
+
+    class ArrayCoercible < Coercible
+      def initialize(name, klass, default, strict=true, &validator_proc)
+        @element_class = klass
+        super(name, ::Array, default, strict, &validator_proc)
+      end
+
+      def coerce(value)
+        Array(value)
+      end
+
+      protected
+      def validate(input)
+        if !input.is_a?(@klass)
+          raise ArgumentError.new("Setting \"#{@name}\" must be a #{@klass}. Received: #{input} (#{input.class})")
+        end
+
+        unless input.all? {|el| el.kind_of?(@element_class) }
+          raise ArgumentError.new("Values of setting \"#{@name}\" must be #{@element_class}. Received: #{input.map(&:class)}")
+        end
+
+        if @validator_proc && !@validator_proc.call(input)
+          raise ArgumentError.new("Failed to validate setting \"#{@name}\" with value: #{input}")
+        end
+      end
+    end
+
+    class SplittableStringArray < ArrayCoercible
+      DEFAULT_TOKEN = ","
+
+      def initialize(name, klass, default, strict=true, tokenizer = DEFAULT_TOKEN, &validator_proc)
+        @element_class = klass
+        @token = tokenizer
+        super(name, klass, default, strict, &validator_proc)
+      end
+
+      def coerce(value)
+        if value.is_a?(Array)
+          value
+        elsif value.nil?
+          []
+        else
+          value.split(@token).map(&:strip)
+        end
+      end
+    end
+
+    class Modules < Coercible
+      def initialize(name, klass, default = nil)
+        super(name, klass, default, false)
+      end
+
+      def set(value)
+        @value = coerce(value)
+        @value_is_set = true
+        @value
+      end
+
+      def coerce(value)
+        if value.is_a?(@klass)
+          return value
+        end
+        @klass.new(value)
+      end
+
+      protected
+      def validate(value)
+        coerce(value)
       end
     end
   end
@@ -494,4 +682,3 @@ module LogStash
 
   SETTINGS = Settings.new
 end
-

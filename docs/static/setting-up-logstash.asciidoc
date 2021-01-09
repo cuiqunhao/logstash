@@ -7,12 +7,14 @@ This section includes additional information on how to set up and run Logstash, 
 
 * <<dir-layout>>
 * <<config-setting-files>>
+* <<logstash-settings-file>>
+* <<keystore>>
+* <<running-logstash-command-line>>
 * <<running-logstash>>
 * <<docker>>
-* <<logstash-settings-file>>
-* <<command-line-flags>>
+* <<docker-config>>
+* <<running-logstash-windows>>
 * <<logging>>
-* <<persistent-queues>>
 * <<shutdown>>
 
 
@@ -29,7 +31,7 @@ directories are, by default, contained within the home directory -- the director
 created when unpacking the archive.
 
 This is very convenient because you don't have to create any directories to start using Logstash, and uninstalling
-Lostash is as easy as removing the home directory.  However, it is advisable to change the default locations of the
+Logstash is as easy as removing the home directory.  However, it is advisable to change the default locations of the
 config and the logs directories so that you do not delete important data later on.
 
 [cols="<h,<,<m,<m",options="header",]
@@ -50,7 +52,7 @@ config and the logs directories so that you do not delete important data later o
   | Configuration files, including `logstash.yml` and `jvm.options`
   | `{extract.path}/config`
   | `path.settings`
-  
+
 | logs
   | Log files
   | `{extract.path}/logs`
@@ -60,6 +62,11 @@ config and the logs directories so that you do not delete important data later o
   | Local, non Ruby-Gem plugin files. Each plugin is contained in a subdirectory. Recommended for development only.
   | `{extract.path}/plugins`
   | `path.plugins`
+
+| data
+  | Data files used by logstash and its plugins for any persistence needs.
+  | `{extract.path}/data`
+  | `path.data`
 
 |=======================================================================
 
@@ -90,8 +97,8 @@ locations for the system:
 
 | conf
   | Logstash pipeline configuration files
-  | `/etc/logstash/conf.d`
-  | `path.config`
+  | `/etc/logstash/conf.d/*.conf`
+  | See `/etc/logstash/pipelines.yml`
 
 | logs
   | Log files
@@ -102,6 +109,11 @@ locations for the system:
   | Local, non Ruby-Gem plugin files. Each plugin is contained in a subdirectory. Recommended for development only.
   | `/usr/share/logstash/plugins`
   | `path.plugins`
+
+| data
+  | Data files used by logstash and its plugins for any persistence needs.
+  | `/var/lib/logstash`
+  | `path.data`
 
 |=======================================================================
 
@@ -140,6 +152,11 @@ similar directory layout.
   | `/usr/share/logstash/plugins`
   | `path.plugins`
 
+| data
+  | Data files used by logstash and its plugins for any persistence needs.
+  | `/usr/share/logstash/data`
+  | `path.data`
+
 |=======================================================================
 
 NOTE: Logstash Docker containers do not create log files by default. They log
@@ -151,14 +168,16 @@ to standard output.
 Logstash has two types of configuration files: _pipeline configuration files_, which define the Logstash processing
 pipeline, and _settings files_, which specify options that control Logstash startup and execution.
 
+[[pipeline-config-files]]
 ==== Pipeline Configuration Files
 
 You create pipeline configuration files when you define the stages of your Logstash processing pipeline. On deb and
-rpm, you place the pipeline configuration files in the `/etc/logstash/conf.d` directory. Logstash tries to load all
-files in the `/etc/logstash/conf.d directory`, so don't store any non-config files or backup files in this directory.
+rpm, you place the pipeline configuration files in the `/etc/logstash/conf.d` directory. Logstash tries to load only
+files with `.conf` extension in the `/etc/logstash/conf.d directory` and ignores all other files.
 
 See <<configuration>> for more info.
 
+[[settings-files]]
 ==== Settings Files
 
 The settings files are already defined in the Logstash installation. Logstash includes the following settings files:
@@ -166,9 +185,14 @@ The settings files are already defined in the Logstash installation. Logstash in
 *`logstash.yml`*::
   Contains Logstash configuration flags. You can set flags in this file instead of passing the flags at the command
   line. Any flags that you set at the command line override the corresponding settings in the `logstash.yml` file. See <<logstash-settings-file>> for more info.
+*`pipelines.yml`*::
+  Contains the framework and instructions for running multiple pipelines in a single Logstash instance. See <<multiple-pipelines>> for more info.
 *`jvm.options`*::
-  Contains JVM configuration flags. Specify each flag on a separate line. You can also use this file to set the locale
-  for Logstash.
+  Contains JVM configuration flags. Use this file to set initial and maximum values for
+  total heap space. You can also use this file to set the locale for Logstash.
+  Specify each flag on a separate line. All other settings in this file are
+  considered expert settings.
+*`log4j2.properties`*:: Contains default settings for `log4j 2` library. See <<log4j2>> for more info.
 *`startup.options` (Linux)*::
   Contains options used by the `system-install` script in `/usr/share/logstash/bin` to build the appropriate startup
   script for your system. When you install the Logstash package, the `system-install` script executes at the end of the
@@ -177,57 +201,3 @@ The settings files are already defined in the Logstash installation. Logstash in
   the file and change the values for specific settings. Note that the `startup.options` file is not read at startup. If
   you want to change the Logstash startup script (for example, to change the Logstash user or read from a different
   configuration path), you must re-run the `system-install` script (as root) to pass in the new settings.
-
-[[running-logstash]]
-=== Running Logstash as a Service on Debian or RPM
-
-Logstash is not started automatically after installation. How to start and stop Logstash depends on whether your system
-uses systemd, upstart, or SysV.
-
-Here are some common operating systems and versions, and the corresponding
-startup styles they use.  This list is intended to be informative, not exhaustive.
-
-|=======================================================================
-| Distribution | Service System |
-| Ubuntu 16.04 and newer | <<running-logstash-systemd,systemd>> |
-| Ubuntu 12.04 through 15.10 | <<running-logstash-upstart,upstart>> |
-| Debian 8 "jessie" and newer | <<running-logstash-systemd,systemd>> |
-| Debian 7 "wheezy" and older | <<running-logstash-sysv,sysv>> |
-| CentOS (and RHEL) 7 and newer | <<running-logstash-systemd,systemd>> |
-| CentOS (and RHEL) 6 | <<running-logstash-upstart,upstart>> |
-|=======================================================================
-
-[[running-logstash-systemd]]
-==== Running Logstash by Using Systemd
-
-Distributions like Debian Jessie, Ubuntu 15.10+, and many of the SUSE derivatives use systemd and the
-`systemctl` command to start and stop services. Logstash places the systemd unit files in `/etc/systemd/system` for both deb and rpm. After installing the package, you can start up Logstash with:
-
-[source,sh]
---------------------------------------------
-sudo systemctl start logstash.service
--------------------------------------------
-
-[[running-logstash-upstart]]
-==== Running Logstash by Using Upstart
-
-For systems that use upstart, you can start Logstash with:
-
-[source,sh]
---------------------------------------------
-sudo initctl start logstash
--------------------------------------------
-
-The auto-generated configuration file for upstart systems is `/etc/init/logstash.conf`.
-
-[[running-logstash-sysv]]
-==== Running Logstash by Using SysV
-
-For systems that use SysV, you can start Logstash with:
-
-[source,sh]
---------------------------------------------
-sudo /etc/init.d/logstash start
--------------------------------------------
-
-The auto-generated configuration file for SysV systems is `/etc/init.d/logstash`.

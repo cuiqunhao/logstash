@@ -1,33 +1,70 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 Thread.abort_on_exception = true
 Encoding.default_external = Encoding::UTF_8
 $DEBUGLIST = (ENV["DEBUG"] || "").split(",")
 
+require 'pathname'
+LogStash::ROOT = Pathname.new(File.join(File.expand_path(File.dirname(__FILE__)), "..", "..", "..")).cleanpath.to_s
+LogStash::XPACK_PATH = File.join(LogStash::ROOT, "x-pack")
+LogStash::OSS = ENV["OSS"] == "true" || !File.exists?(LogStash::XPACK_PATH)
+
+if !LogStash::OSS
+  xpack_dir = File.join(LogStash::XPACK_PATH, "lib")
+  unless $LOAD_PATH.include?(xpack_dir)
+    $LOAD_PATH.unshift(xpack_dir)
+  end
+end
+
 require "clamp"
 require "net/http"
 
-require "logstash/namespace"
 require "logstash-core/logstash-core"
 require "logstash/environment"
+require "logstash/modules/cli_parser"
+require "logstash/util/settings_helper"
 
 LogStash::Environment.load_locale!
 
 require "logstash/agent"
 require "logstash/config/defaults"
-require "logstash/shutdown_watcher"
 require "logstash/patches/clamp"
 require "logstash/settings"
 require "logstash/version"
-require "logstash/plugins/registry"
+require 'logstash/plugins'
+require "logstash/modules/util"
+require "logstash/bootstrap_check/default_config"
+require "logstash/bootstrap_check/persisted_queue_config"
+require "set"
+
+java_import 'org.logstash.FileLockFactory'
 
 class LogStash::Runner < Clamp::StrictCommand
   include LogStash::Util::Loggable
-  # The `path.settings` and `path.logs` need to be defined in the runner instead of the `logstash-core/lib/logstash/environment.rb`
-  # because the `Environment::LOGSTASH_HOME` doesn't exist in the context of the `logstash-core` gem.
-  #
-  # See issue https://github.com/elastic/logstash/issues/5361
-  LogStash::SETTINGS.register(LogStash::Setting::String.new("path.settings", ::File.join(LogStash::Environment::LOGSTASH_HOME, "config")))
-  LogStash::SETTINGS.register(LogStash::Setting::String.new("path.logs", ::File.join(LogStash::Environment::LOGSTASH_HOME, "logs")))
+
+  LogStash::Util::SettingsHelper.pre_process
+
+  # Ordered list of check to run before starting logstash
+  # theses checks can be changed by a plugin loaded into memory.
+  DEFAULT_BOOTSTRAP_CHECKS = [
+      LogStash::BootstrapCheck::DefaultConfig,
+      LogStash::BootstrapCheck::PersistedQueueConfig
+  ]
 
   # Node Settings
   option ["-n", "--node.name"], "NAME",
@@ -47,11 +84,50 @@ class LogStash::Runner < Clamp::StrictCommand
     :default => LogStash::SETTINGS.get_default("config.string"),
     :attribute_name => "config.string"
 
+  # Module settings
+  option ["--modules"], "MODULES",
+    I18n.t("logstash.runner.flag.modules"),
+    :multivalued => true,
+    :attribute_name => "modules_list"
+
+  option ["-M", "--modules.variable"], "MODULES_VARIABLE",
+    I18n.t("logstash.runner.flag.modules_variable"),
+    :multivalued => true,
+    :attribute_name => "modules_variable_list"
+
+  option ["--setup"], :flag,
+    I18n.t("logstash.runner.flag.modules_setup"),
+    :default => LogStash::SETTINGS.get_default("modules_setup"),
+    :attribute_name => "modules_setup"
+
+  option ["--cloud.id"], "CLOUD_ID",
+    I18n.t("logstash.runner.flag.cloud_id"),
+    :attribute_name => "cloud.id"
+
+  option ["--cloud.auth"], "CLOUD_AUTH",
+    I18n.t("logstash.runner.flag.cloud_auth"),
+    :attribute_name => "cloud.auth"
+
   # Pipeline settings
+  option ["--pipeline.id"], "ID",
+    I18n.t("logstash.runner.flag.pipeline-id"),
+    :attribute_name => "pipeline.id",
+    :default => LogStash::SETTINGS.get_default("pipeline.id")
+
   option ["-w", "--pipeline.workers"], "COUNT",
     I18n.t("logstash.runner.flag.pipeline-workers"),
     :attribute_name => "pipeline.workers",
     :default => LogStash::SETTINGS.get_default("pipeline.workers")
+
+  option "--pipeline.ordered", "ORDERED",
+    I18n.t("logstash.runner.flag.pipeline-ordered"),
+    :attribute_name => "pipeline.ordered",
+    :default => LogStash::SETTINGS.get_default("pipeline.ordered")
+
+  option ["--plugin-classloaders"], :flag,
+         I18n.t("logstash.runner.flag.plugin-classloaders"),
+         :attribute_name => "pipeline.plugin_classloaders",
+         :default => LogStash::SETTINGS.get_default("pipeline.plugin_classloaders")
 
   option ["-b", "--pipeline.batch.size"], "SIZE",
     I18n.t("logstash.runner.flag.pipeline-batch-size"),
@@ -67,6 +143,11 @@ class LogStash::Runner < Clamp::StrictCommand
     I18n.t("logstash.runner.flag.unsafe_shutdown"),
     :attribute_name => "pipeline.unsafe_shutdown",
     :default => LogStash::SETTINGS.get_default("pipeline.unsafe_shutdown")
+
+  option ["--pipeline.ecs_compatibility"], "STRING",
+    I18n.t("logstash.runner.flag.ecs_compatibility"),
+    :attribute_name => "pipeline.ecs_compatibility",
+    :default => LogStash::SETTINGS.get_default('pipeline.ecs_compatibility')
 
   # Data Path Setting
   option ["--path.data"] , "PATH",
@@ -118,6 +199,11 @@ class LogStash::Runner < Clamp::StrictCommand
     :attribute_name => "config.reload.interval",
     :default => LogStash::SETTINGS.get_default("config.reload.interval")
 
+  option ["--http.enabled"], "ENABLED",
+         I18n.t("logstash.runner.flag.http_enabled"),
+         :attribute_name => 'http.enabled',
+         :default => LogStash::SETTINGS.get_default('http.enabled')
+
   option ["--http.host"], "HTTP_HOST",
     I18n.t("logstash.runner.flag.http_host"),
     :attribute_name => "http.host",
@@ -151,34 +237,35 @@ class LogStash::Runner < Clamp::StrictCommand
     I18n.t("logstash.runner.flag.quiet"),
     :new_flag => "log.level", :new_value => "error"
 
-  attr_reader :agent
+  # We configure the registry and load any plugin that can register hooks
+  # with logstash, this needs to be done before any operation.
+  SYSTEM_SETTINGS = LogStash::SETTINGS.clone
+  LogStash::PLUGIN_REGISTRY.setup!
+
+  attr_reader :agent, :settings, :source_loader
+  attr_accessor :bootstrap_checks
 
   def initialize(*args)
     @settings = LogStash::SETTINGS
+    @bootstrap_checks = DEFAULT_BOOTSTRAP_CHECKS.dup
+
+    # Default we check local sources: `-e`, `-f` and the logstash.yml options.
+    @source_loader = LogStash::Config::SourceLoader.new(@settings)
+    @source_loader.add_source(LogStash::Config::Source::Local.new(@settings))
+    @source_loader.add_source(LogStash::Config::Source::Modules.new(@settings))
+    @source_loader.add_source(LogStash::Config::Source::MultiLocal.new(@settings))
+
     super(*args)
   end
 
   def run(args)
-    settings_path = fetch_settings_path(args)
-
-    @settings.set("path.settings", settings_path) if settings_path
-
-    begin
-      LogStash::SETTINGS.from_yaml(LogStash::SETTINGS.get("path.settings"))
-    rescue Errno::ENOENT
-      $stderr.puts "WARNING: Could not find logstash.yml which is typically located in $LS_HOME/config or /etc/logstash. You can specify the path using --path.settings. Continuing using the defaults"
-    rescue => e
-      # abort unless we're just looking for the help
-      unless cli_help?(args)
-        $stderr.puts "ERROR: Failed to load settings file from \"path.settings\". Aborting... path.setting=#{LogStash::SETTINGS.get("path.settings")}, exception=#{e.class}, message=>#{e.message}"
-        return 1
-      end
-    end
-
+    return 1 unless LogStash::Util::SettingsHelper.from_yaml(args)
     super(*[args])
   end
 
   def execute
+    LogStash::Util::SettingsHelper.post_process
+
     require "logstash/util"
     require "logstash/util/java_version"
     require "stud/task"
@@ -188,65 +275,96 @@ class LogStash::Runner < Clamp::StrictCommand
     java.lang.System.setProperty("ls.logs", setting("path.logs"))
     java.lang.System.setProperty("ls.log.format", setting("log.format"))
     java.lang.System.setProperty("ls.log.level", setting("log.level"))
+    java.lang.System.setProperty("ls.pipeline.separate_logs", setting("pipeline.separate_logs").to_s)
     unless java.lang.System.getProperty("log4j.configurationFile")
       log4j_config_location = ::File.join(setting("path.settings"), "log4j2.properties")
-      LogStash::Logging::Logger::initialize("file://" + log4j_config_location)
+
+      # Windows safe way to produce a file: URI.
+      file_schema = "file://" + (LogStash::Environment.windows? ? "/" : "")
+      LogStash::Logging::Logger::reconfigure(URI.encode(file_schema + File.absolute_path(log4j_config_location)))
     end
     # override log level that may have been introduced from a custom log4j config file
     LogStash::Logging::Logger::configure_logging(setting("log.level"))
 
-    if setting("config.debug") && logger.debug?
+    if setting("config.debug") && !logger.debug?
       logger.warn("--config.debug was specified, but log.level was not set to \'debug\'! No config info will be logged.")
     end
 
-    # We configure the registry and load any plugin that can register hooks
-    # with logstash, this need to be done before any operation.
-    LogStash::PLUGIN_REGISTRY.setup!
-    @settings.validate_all
-
-    LogStash::Util::set_thread_name(self.class.name)
-
-    if RUBY_VERSION < "1.9.2"
-      logger.fatal "Ruby 1.9.2 or later is required. (You are running: " + RUBY_VERSION + ")"
-      return 1
-    end
-
-    # Exit on bad java versions
-    java_version = LogStash::Util::JavaVersion.version
-    if LogStash::Util::JavaVersion.bad_java_version?(java_version)
-      logger.fatal "Java version 1.8.0 or later is required. (You are running: #{java_version})"
-      return 1
-    end
-
-    LogStash::ShutdownWatcher.unsafe_shutdown = setting("pipeline.unsafe_shutdown")
-
-    configure_plugin_paths(setting("path.plugins"))
-
+    # Skip any validation and just return the version
     if version?
       show_version
       return 0
     end
 
+    logger.info("Starting Logstash", "logstash.version" => LOGSTASH_VERSION, "jruby.version" => RUBY_DESCRIPTION)
+
+    # Add local modules to the registry before everything else
+    LogStash::Modules::Util.register_local_modules(LogStash::Environment::LOGSTASH_HOME)
+
+    @dispatcher = LogStash::EventDispatcher.new(self)
+    LogStash::PLUGIN_REGISTRY.hooks.register_emitter(self.class, @dispatcher)
+
+    @settings.validate_all
+    @dispatcher.fire(:before_bootstrap_checks)
+
     return start_shell(setting("interactive"), binding) if setting("interactive")
+
+    module_parser = LogStash::Modules::CLIParser.new(setting("modules_list"), setting("modules_variable_list"))
+    # Now populate Setting for modules.list with our parsed array.
+    @settings.set("modules.cli", module_parser.output)
+
+    begin
+      @bootstrap_checks.each { |bootstrap| bootstrap.check(@settings) }
+    rescue LogStash::BootstrapCheckError => e
+      signal_usage_error(e.message)
+      return 1
+    end
+    @dispatcher.fire(:after_bootstrap_checks)
+
+    LogStash::Util::set_thread_name(self.class.name)
+
+    LogStash::ShutdownWatcher.unsafe_shutdown = setting("pipeline.unsafe_shutdown")
+
+    configure_plugin_paths(setting("path.plugins"))
+
 
     @settings.format_settings.each {|line| logger.debug(line) }
 
-    if setting("config.string").nil? && setting("path.config").nil?
-      fail(I18n.t("logstash.runner.missing-configuration"))
+    # Check for absence of any configuration
+    # not bulletproof because we don't know yet if there
+    # are no pipelines from pipelines.yml
+    sources_without_conflict = []
+    unmatched_sources_conflict_messages = []
+    @source_loader.sources do |source|
+      if source.config_conflict?
+        if source.conflict_messages.any?
+          unmatched_sources_conflict_messages << source.conflict_messages.join(", ")
+        end
+      else
+        sources_without_conflict << source
+      end
     end
-
-    if setting("config.reload.automatic") && setting("path.config").nil?
-      # there's nothing to reload
-      signal_usage_error(I18n.t("logstash.runner.reload-without-config-path"))
+    if unmatched_sources_conflict_messages.any?
+      # i18n should be done at the sources side
+      signal_usage_error(unmatched_sources_conflict_messages.join(" "))
+      return 1
+    elsif sources_without_conflict.empty?
+      signal_usage_error(I18n.t("logstash.runner.missing-configuration"))
+      return 1
     end
 
     if setting("config.test_and_exit")
-      config_loader = LogStash::Config::Loader.new(logger)
-      config_str = config_loader.format_config(setting("path.config"), setting("config.string"))
       begin
-        LogStash::Pipeline.new(config_str)
-        puts "Configuration OK"
-        logger.info "Using config.test_and_exit mode. Config Validation Result: OK. Exiting Logstash"
+        results = @source_loader.fetch
+
+        # TODO(ph): make it better for multiple pipeline
+        if results.success?
+          results.response.each { |pipeline_config| LogStash::JavaPipeline.new(pipeline_config) }
+          puts "Configuration OK"
+          logger.info "Using config.test_and_exit mode. Config Validation Result: OK. Exiting Logstash"
+        else
+          raise "Could not load the configuration file"
+        end
         return 0
       rescue => e
         logger.fatal I18n.t("logstash.runner.invalid-configuration", :error => e.message)
@@ -254,9 +372,12 @@ class LogStash::Runner < Clamp::StrictCommand
       end
     end
 
-    @agent = create_agent(@settings)
+    # lock path.data before starting the agent
+    @data_path_lock = FileLockFactory.obtainLock(java.nio.file.Paths.get(setting("path.data")).to_absolute_path, ".lock")
 
-    @agent.register_pipeline("main", @settings)
+    @dispatcher.fire(:before_agent)
+    @agent = create_agent(@settings, @source_loader)
+    @dispatcher.fire(:after_agent)
 
     # enable sigint/sigterm before starting the agent
     # to properly handle a stalled agent
@@ -273,11 +394,16 @@ class LogStash::Runner < Clamp::StrictCommand
 
     @agent.shutdown
 
+    logger.info("Logstash shut down.")
+
     # flush any outstanding log messages during shutdown
     org.apache.logging.log4j.LogManager.shutdown
 
     agent_return
 
+  rescue org.logstash.LockException => e
+    logger.fatal(I18n.t("logstash.runner.locked-data-path", :path => setting("path.data")))
+    return 1
   rescue Clamp::UsageError => e
     $stderr.puts "ERROR: #{e.message}"
     show_short_help
@@ -294,6 +420,7 @@ class LogStash::Runner < Clamp::StrictCommand
     Stud::untrap("INT", sigint_id) unless sigint_id.nil?
     Stud::untrap("TERM", sigterm_id) unless sigterm_id.nil?
     Stud::untrap("HUP", sighup_id) unless sighup_id.nil?
+    FileLockFactory.releaseLock(@data_path_lock) if @data_path_lock
     @log_fd.close if @log_fd
   end # def self.main
 
@@ -302,7 +429,7 @@ class LogStash::Runner < Clamp::StrictCommand
 
     if logger.info?
       show_version_ruby
-      show_version_java if LogStash::Environment.jruby?
+      show_version_java
       show_gems if logger.debug?
     end
   end # def show_version
@@ -369,7 +496,7 @@ class LogStash::Runner < Clamp::StrictCommand
   def trap_sighup
     Stud::trap("HUP") do
       logger.warn(I18n.t("logstash.agent.sighup"))
-      @agent.reload_state!
+      @agent.converge_state_and_update
     end
   end
 
@@ -384,7 +511,10 @@ class LogStash::Runner < Clamp::StrictCommand
     Stud::trap("INT") do
       if @interrupted_once
         logger.fatal(I18n.t("logstash.agent.forced_sigint"))
-        exit
+        # calling just Kernel.exit only raises SystemExit exception
+        # and doesn't guarantee the process will terminate
+        # We must call Kernel.exit! so java.lang.System.exit is called
+        exit!(1)
       else
         logger.warn(I18n.t("logstash.agent.sigint"))
         Thread.new(logger) {|lg| sleep 5; lg.warn(I18n.t("logstash.agent.slow_shutdown")) }
@@ -396,30 +526,6 @@ class LogStash::Runner < Clamp::StrictCommand
 
   def setting(key)
     @settings.get_value(key)
-  end
-
-  # where can I find the logstash.yml file?
-  # 1. look for a "--path.settings path"
-  # 2. look for a "--path.settings=path"
-  # 3. check if the LS_SETTINGS_DIR environment variable is set
-  # 4. return nil if not found
-  def fetch_settings_path(cli_args)
-    if i=cli_args.find_index("--path.settings")
-      cli_args[i+1]
-    elsif settings_arg = cli_args.find {|v| v.match(/--path.settings=/) }
-      match = settings_arg.match(/--path.settings=(.*)/)
-      match[1]
-    elsif ENV['LS_SETTINGS_DIR']
-      ENV['LS_SETTINGS_DIR']
-    else
-      nil
-    end
-  end
-  
-  # is the user asking for CLI help subcommand?
-  def cli_help?(args)
-    # I know, double negative
-    !(["--help", "-h"] & args).empty?
   end
 
 end

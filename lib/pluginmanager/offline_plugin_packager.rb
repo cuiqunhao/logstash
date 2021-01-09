@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/ui"
 require "pluginmanager/errors"
 require "bootstrap/environment"
@@ -28,12 +44,10 @@ module LogStash module PluginManager
     LOGSTASH_DIR = "logstash"
     DEPENDENCIES_DIR = ::File.join(LOGSTASH_DIR, "dependencies")
 
-    # To make sure we have the maximun compatibility
-    # we will ignore theses gems and they wont be included in the pack
+    # To make sure we have the maximum compatibility
+    # we will ignore theses gems and they won't be included in the pack
     IGNORE_GEMS_IN_PACK = %w(
       logstash-core
-      logstash-core-queue-jruby
-      logstash-core-event-java
       logstash-core-plugin-api
       jar-dependencies
     )
@@ -68,7 +82,7 @@ module LogStash module PluginManager
         if specs.size > 0
           specs
         else
-          raise LogStash::PluginManager::PluginNotFoundError, "Cannot find plugins matching: `#{plugin_pattern}`"
+          raise LogStash::PluginManager::PluginNotFoundError, "Cannot find plugins matching: `#{plugin_pattern}`. Please install these before creating the offline pack"
         end
       end.flatten
     end

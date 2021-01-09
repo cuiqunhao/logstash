@@ -1,11 +1,26 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/command"
 require "pluginmanager/install_strategy_factory"
 require "pluginmanager/ui"
 require "pluginmanager/errors"
 require "jar-dependencies"
 require "jar_install_post_install_hook"
-require "file-dependencies/gem"
 require "fileutils"
 
 class LogStash::PluginManager::Install < LogStash::PluginManager::Command
@@ -58,11 +73,42 @@ class LogStash::PluginManager::Install < LogStash::PluginManager::Command
       verify_remote!(gems) if !local? && verify?
     end
 
+    check_for_integrations(gems)
     install_gems_list!(gems)
     remove_unused_locally_installed_gems!
+    remove_unused_integration_overlaps!
   end
 
   private
+
+  def remove_unused_integration_overlaps!
+    installed_plugin_specs = plugins_arg.flat_map do |plugin_arg|
+      if LogStash::PluginManager.plugin_file?(plugin_arg)
+        LogStash::PluginManager.plugin_file_spec(plugin_arg)
+      else
+        LogStash::PluginManager.find_plugins_gem_specs(plugin_arg)
+      end
+    end.select do |spec|
+      LogStash::PluginManager.integration_plugin_spec?(spec)
+    end.flat_map do |spec|
+      LogStash::PluginManager.integration_plugin_provides(spec)
+    end.select do |plugin_name|
+      LogStash::PluginManager.installed_plugin?(plugin_name, gemfile)
+    end.each do |plugin_name|
+      puts "Removing '#{plugin_name}' since it is provided by an integration plugin"
+      ::Bundler::LogstashUninstall.uninstall!(plugin_name)
+    end
+  end
+
+  def check_for_integrations(gems)
+    gems.each do |plugin, _version|
+      integration_plugin = LogStash::PluginManager.which_integration_plugin_provides(plugin, gemfile)
+      if integration_plugin
+        signal_error("Installation aborted, plugin '#{plugin}' is already provided by '#{integration_plugin.name}'")
+      end
+    end
+  end
+
   def validate_cli_options!
     if development?
       signal_usage_error("Cannot specify plugin(s) with --development, it will add the development dependencies of the currently installed plugins") unless plugins_arg.empty?
@@ -122,8 +168,8 @@ class LogStash::PluginManager::Install < LogStash::PluginManager::Command
     # Add plugins/gems to the current gemfile
     puts("Installing" + (install_list.empty? ? "..." : " " + install_list.collect(&:first).join(", ")))
     install_list.each do |plugin, version, options|
+      plugin_gem = gemfile.find(plugin)
       if preserve?
-        plugin_gem = gemfile.find(plugin)
         puts("Preserving Gemfile gem options for plugin #{plugin}") if plugin_gem && !plugin_gem.options.empty?
         gemfile.update(plugin, version, options)
       else
@@ -170,7 +216,7 @@ class LogStash::PluginManager::Install < LogStash::PluginManager::Command
       # paquet will lookup in the cache directory before going to rubygems.
       FileUtils.cp(plugin, ::File.join(LogStash::Environment::CACHE_PATH, ::File.basename(plugin)))
       package, path = LogStash::Rubygems.unpack(plugin, LogStash::Environment::LOCAL_GEM_PATH)
-      [package.spec.name, package.spec.version, { :path => relative_path(path) }]
+      [package.spec.name, package.spec.version, { :path => relative_path(path) }, package.spec]
     end
   end
 

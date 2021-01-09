@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
 require "logstash/json"
 require "logstash/environment"
@@ -33,60 +49,42 @@ describe "LogStash::Json" do
     ]
   }
 
-  if LogStash::Environment.jruby?
+  # Former expectation in this code were removed because of https://github.com/rspec/rspec-mocks/issues/964
+  # as soon as is fix we can re introduce them if desired, however for now the completeness of the test
+  # is also not affected as the conversion would not work if the expectation where not meet.
+  ###
+  context "jruby deserialize" do
+    it "should respond to load and deserialize object" do
+      expect(LogStash::Json.load(json_hash)).to eql(hash)
+    end
+  end
 
-    ### JRuby specific
-    # Former expectation in this code were removed because of https://github.com/rspec/rspec-mocks/issues/964
-    # as soon as is fix we can re introduce them if decired, however for now the completeness of the test
-    # is also not affected as the conversion would not work if the expectation where not meet.
-    ###
-    context "jruby deserialize" do
-      it "should respond to load and deserialize object" do
-        expect(LogStash::Json.load(json_hash)).to eql(hash)
-      end
+  context "jruby serialize" do
+    it "should respond to dump and serialize object" do
+      expect(LogStash::Json.dump(string)).to eql(json_string)
     end
 
-    context "jruby serialize" do
-      it "should respond to dump and serialize object" do
-        expect(LogStash::Json.dump(string)).to eql(json_string)
-      end
-
-      it "should call JrJackson::Raw.generate for Hash" do
-        expect(LogStash::Json.dump(hash)).to eql(json_hash)
-      end
-
-      it "should call JrJackson::Raw.generate for Array" do
-        expect(LogStash::Json.dump(array)).to eql(json_array)
-      end
-
-      context "pretty print" do
-
-        let(:hash) { { "foo" => "bar", :zoo => 2 } }
-
-        it "should serialize with pretty print" do
-          pprint_json = LogStash::Json.dump(hash, :pretty => true)
-          expect(pprint_json).to include("\n")
-        end
-
-        it "should by default do no pretty print" do
-          pprint_json = LogStash::Json.dump(hash)
-          expect(pprint_json).not_to include("\n")
-        end
-      end
+    it "should call JrJackson::Raw.generate for Hash" do
+      expect(LogStash::Json.dump(hash)).to eql(json_hash)
     end
 
-  else
-
-    ### MRI specific
-
-    it "should respond to load and deserialize object on mri" do
-      expect(Oj).to receive(:load).with(json).and_call_original
-      expect(LogStash::Json.load(json)).to eql(hash)
+    it "should call JrJackson::Raw.generate for Array" do
+      expect(LogStash::Json.dump(array)).to eql(json_array)
     end
 
-    it "should respond to dump and serialize object on mri" do
-      expect(Oj).to receive(:dump).with(hash, anything).and_call_original
-      expect(LogStash::Json.dump(hash)).to eql(json)
+    context "pretty print" do
+
+      let(:hash) { { "foo" => "bar", :zoo => 2 } }
+
+      it "should serialize with pretty print" do
+        pprint_json = LogStash::Json.dump(hash, :pretty => true)
+        expect(pprint_json).to include("\n")
+      end
+
+      it "should by default do no pretty print" do
+        pprint_json = LogStash::Json.dump(hash)
+        expect(pprint_json).not_to include("\n")
+      end
     end
   end
 

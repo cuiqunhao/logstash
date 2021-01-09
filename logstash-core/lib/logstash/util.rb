@@ -1,5 +1,20 @@
-# encoding: utf-8
-require "logstash/namespace"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/environment"
 
 module LogStash::Util
@@ -10,10 +25,10 @@ module LogStash::Util
 
   PR_SET_NAME = 15
   def self.set_thread_name(name)
-    if RUBY_ENGINE == "jruby"
-      # Keep java and ruby thread names in sync.
-      Java::java.lang.Thread.currentThread.setName(name)
-    end
+    previous_name = Java::java.lang.Thread.currentThread.getName() if block_given?
+
+    # Keep java and ruby thread names in sync.
+    Java::java.lang.Thread.currentThread.setName(name)
     Thread.current[:name] = name
 
     if UNAME == "linux"
@@ -22,23 +37,24 @@ module LogStash::Util
       # since MRI 1.9, JRuby, and Rubinius use system threads for this.
       LibC.prctl(PR_SET_NAME, name[0..16], 0, 0, 0)
     end
+
+    if block_given?
+      begin
+        yield
+      ensure
+        set_thread_name(previous_name)
+      end
+    end
   end # def set_thread_name
 
   def self.set_thread_plugin(plugin)
     Thread.current[:plugin] = plugin
   end
 
-  def self.get_thread_id(thread)
-    if RUBY_ENGINE == "jruby"
-      JRuby.reference(thread).native_thread.id
-    else
-      raise Exception.new("Native thread IDs aren't supported outside of JRuby")
-    end
-  end
-
   def self.thread_info(thread)
-    backtrace = thread.backtrace.map do |line|
-      line.gsub(LogStash::Environment::LOGSTASH_HOME, "[...]")
+    # When the `thread` is dead, `Thread#backtrace` returns `nil`; fall back to an empty array.
+    backtrace = (thread.backtrace || []).map do |line|
+      line.sub(LogStash::Environment::LOGSTASH_HOME, "[...]")
     end
 
     blocked_on = case backtrace.first
@@ -48,7 +64,7 @@ module LogStash::Util
                  end
 
     {
-      "thread_id" => get_thread_id(thread),
+      "thread_id" => get_thread_id(thread), # might be nil for dead threads
       "name" => thread[:name],
       "plugin" => (thread[:plugin] ? thread[:plugin].debug_info : nil),
       "backtrace" => backtrace,
@@ -141,34 +157,26 @@ module LogStash::Util
   end # def hash_merge_many
 
 
-  # nomalize method definition based on platform.
+  # normalize method definition based on platform.
   # normalize is used to convert an object create through
   # json deserialization from JrJackson in :raw mode to pure Ruby
   # to support these pure Ruby object monkey patches.
   # see logstash/json.rb and logstash/java_integration.rb
 
-  if LogStash::Environment.jruby?
-    require "java"
-
-    # recursively convert any Java LinkedHashMap and ArrayList to pure Ruby.
-    # will not recurse into pure Ruby objects. Pure Ruby object should never
-    # contain LinkedHashMap and ArrayList since these are only created at
-    # initial deserialization, anything after (deeper) will be pure Ruby.
-    def self.normalize(o)
-      case o
-      when Java::JavaUtil::LinkedHashMap
-        o.inject({}){|r, (k, v)| r[k] = normalize(v); r}
-      when Java::JavaUtil::ArrayList
-        o.map{|i| normalize(i)}
-      else
-        o
-      end
+  require "java"
+  # recursively convert any Java LinkedHashMap and ArrayList to pure Ruby.
+  # will not recurse into pure Ruby objects. Pure Ruby object should never
+  # contain LinkedHashMap and ArrayList since these are only created at
+  # initial deserialization, anything after (deeper) will be pure Ruby.
+  def self.normalize(o)
+    case o
+    when Java::JavaUtil::LinkedHashMap
+      o.inject({}){|r, (k, v)| r[k] = normalize(v); r}
+    when Java::JavaUtil::ArrayList
+      o.map{|i| normalize(i)}
+    else
+      o
     end
-
-  else
-
-    # identity function, pure Ruby object don't need normalization.
-    def self.normalize(o); o; end
   end
 
   def self.stringify_symbols(o)
@@ -199,14 +207,32 @@ module LogStash::Util
       o.inject({}) {|h, (k,v)| h[k] = deep_clone(v); h }
     when Array
       o.map {|v| deep_clone(v) }
-    when Fixnum, Symbol, IO, TrueClass, FalseClass, NilClass
+    when Integer, Symbol, IO, TrueClass, FalseClass, NilClass
       o
     when LogStash::Codecs::Base
       o.clone
     when String
       o.clone #need to keep internal state e.g. frozen
+    when LogStash::Timestamp
+      o.clone
     else
       Marshal.load(Marshal.dump(o))
     end
   end
+
+  # Returns true if the object is considered blank.
+  # A blank includes things like '', '   ', nil,
+  # and arrays and hashes that have nothing in them.
+  #
+  # This logic is mostly shared with ActiveSupport's blank?
+  def self.blank?(value)
+    if value.kind_of?(NilClass)
+      true
+    elsif value.kind_of?(String)
+      value !~ /\S/
+    else
+      value.respond_to?(:empty?) ? value.empty? : !value
+    end
+  end
+
 end # module LogStash::Util

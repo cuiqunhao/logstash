@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/api/commands/base"
 require_relative "hot_threads_reporter"
 
@@ -9,7 +25,7 @@ module LogStash
 
         def all(selected_fields=[])
           payload = {
-            :pipeline => pipeline,
+            :pipelines => pipelines,
             :os => os,
             :jvm => jvm
           }
@@ -17,11 +33,35 @@ module LogStash
           payload
         end
 
-        def pipeline
-          extract_metrics(
-            [:stats, :pipelines, :main, :config],
-            :workers, :batch_size, :batch_delay, :config_reload_automatic, :config_reload_interval
-          )
+        def pipelines(options={})
+          pipeline_ids = service.get_shallow(:stats, :pipelines).keys
+          pipeline_ids.each_with_object({}) do |pipeline_id, result|
+            result[pipeline_id] = pipeline(pipeline_id, options)
+          end
+        end
+
+        def pipeline(pipeline_id, options={})
+          metrics = extract_metrics(
+            [:stats, :pipelines, pipeline_id.to_sym, :config],
+            :ephemeral_id,
+            :hash,
+            :workers,
+            :batch_size,
+            :batch_delay,
+            :config_reload_automatic,
+            :config_reload_interval,
+            :dead_letter_queue_enabled,
+            :dead_letter_queue_path,
+          ).reject{|_, v|v.nil?}
+          if options.fetch(:graph, false)
+            extended_stats = extract_metrics([:stats, :pipelines, pipeline_id.to_sym, :config], :graph)
+            decorated_vertices = extended_stats[:graph]["graph"]["vertices"].map { |vertex| decorate_with_cluster_uuids(vertex)  }
+            extended_stats[:graph]["graph"]["vertices"] = decorated_vertices
+            metrics.merge!(extended_stats)
+          end
+          metrics
+        rescue
+          {}
         end
 
         def os
@@ -39,7 +79,6 @@ module LogStash
           {
             :pid =>  ManagementFactory.getRuntimeMXBean().getName().split("@").first.to_i,
             :version => java.lang.System.getProperty("java.version"),
-            :vm_name => java.lang.System.getProperty("java.vm.name"),
             :vm_version => java.lang.System.getProperty("java.version"),
             :vm_vendor => java.lang.System.getProperty("java.vendor"),
             :vm_name => java.lang.System.getProperty("java.vm.name"),
@@ -56,6 +95,24 @@ module LogStash
 
         def hot_threads(options={})
           HotThreadsReport.new(self, options)
+        end
+
+        private
+        ##
+        # Returns a vertex, decorated with the cluster UUID metadata retrieved from ES
+        # Does not mutate the passed `vertex` object.
+        # @api private
+        # @param vertex [Hash{String=>Object}]
+        # @return [Hash{String=>Object}]
+        def decorate_with_cluster_uuids(vertex)
+          plugin_id = vertex["id"]&.to_s
+          return vertex unless plugin_id && LogStash::PluginMetadata.exists?(plugin_id)
+
+          plugin_metadata = LogStash::PluginMetadata.for_plugin(plugin_id)
+          cluster_uuid = plugin_metadata&.get(:cluster_uuid)
+          vertex = vertex.merge("cluster_uuid" => cluster_uuid) unless cluster_uuid.nil?
+
+          vertex
         end
       end
     end

@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require 'spec_helper'
 require 'pluginmanager/main'
 require "pluginmanager/pack_fetch_strategy/repository"
@@ -7,17 +23,10 @@ describe LogStash::PluginManager::Install do
   let(:cmd) { LogStash::PluginManager::Install.new("install") }
 
   context "when validating plugins" do
-    before(:each) do
-      expect(cmd).to receive(:validate_cli_options!).and_return(nil)
-    end
-
-    before do
-      expect(LogStash::PluginManager::PackFetchStrategy::Repository).to receive(:get_installer_for).with(anything).and_return(nil)
-    end
-
     let(:sources) { ["https://rubygems.org", "http://localhost:9292"] }
 
     before(:each) do
+      expect(cmd).to receive(:validate_cli_options!).and_return(nil)
       expect(cmd).to receive(:plugins_gems).and_return([["dummy", nil]])
       expect(cmd).to receive(:install_gems_list!).and_return(nil)
       expect(cmd).to receive(:remove_unused_locally_installed_gems!).and_return(nil)

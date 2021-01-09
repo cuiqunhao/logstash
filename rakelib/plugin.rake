@@ -1,16 +1,46 @@
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require_relative "default_plugins"
 require 'rubygems'
 
 namespace "plugin" do
 
   def install_plugins(*args)
-    system("bin/logstash-plugin", "install", *args)
-    raise(RuntimeError, $!.to_s) unless $?.success?
+    require_relative "../lib/pluginmanager/main"
+    LogStash::PluginManager::Main.run("bin/logstash-plugin", ["install"] + args)
   end
 
-  task "install-development-dependencies" do
-    puts("[plugin:install-development-dependencies] Installing development dependencies of all installed plugins")
+  task "install-base" => "bootstrap" do
+    puts("[plugin:install-base] Installing base dependencies")
     install_plugins("--development",  "--preserve")
+    task.reenable # Allow this task to be run again
+  end
+
+  def remove_lockfile
+    if ::File.exist?(LogStash::Environment::LOCKFILE)
+      ::File.delete(LogStash::Environment::LOCKFILE)
+    end
+  end
+
+  task "install-development-dependencies" => "bootstrap" do
+    puts("[plugin:install-development-dependencies] Installing development dependencies")
+    install_plugins("--development",  "--preserve")
+    install_plugins("--preserve", *LogStash::RakeLib::CORE_SPECS_PLUGINS)
 
     task.reenable # Allow this task to be run again
   end
@@ -23,48 +53,11 @@ namespace "plugin" do
     task.reenable # Allow this task to be run again
   end # task "install"
 
-  task "install-default" do
+  task "install-default" => "bootstrap" do
     puts("[plugin:install-default] Installing default plugins")
+
+    remove_lockfile # because we want to use the release lockfile
     install_plugins("--no-verify", "--preserve", *LogStash::RakeLib::DEFAULT_PLUGINS)
-
-    task.reenable # Allow this task to be run again
-  end
-
-  task "install-core" do
-    puts("[plugin:install-core] Installing core plugins")
-    install_plugins("--no-verify", "--preserve", *LogStash::RakeLib::CORE_SPECS_PLUGINS)
-
-    task.reenable # Allow this task to be run again
-  end
-
-  task "install-jar-dependencies" do
-    puts("[plugin:install-jar-dependencies] Installing jar_dependencies plugins for testing")
-    install_plugins("--no-verify", "--preserve", *LogStash::RakeLib::TEST_JAR_DEPENDENCIES_PLUGINS)
-
-    task.reenable # Allow this task to be run again
-  end
-
-  task "install-vendor" do
-    puts("[plugin:install-jar-dependencies] Installing vendor plugins for testing")
-    install_plugins("--no-verify", "--preserve", *LogStash::RakeLib::TEST_VENDOR_PLUGINS)
-
-    task.reenable # Allow this task to be run again
-  end
-
-  task "install-all" do
-    puts("[plugin:install-all] Installing all plugins from https://github.com/logstash-plugins")
-    p = *LogStash::RakeLib.fetch_all_plugins
-    # Install plugin one by one, ignoring plugins that have issues. Otherwise, one bad plugin will
-    # blow up the entire install process.
-    # TODO Push this downstream to #install_plugins
-    p.each do |plugin|
-      begin
-        install_plugins("--no-verify", "--preserve", plugin)
-      rescue
-        puts "Unable to install #{plugin}. Skipping"
-        next
-      end
-    end
 
     task.reenable # Allow this task to be run again
   end

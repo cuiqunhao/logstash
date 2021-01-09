@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 set -e
 
-# Since we are using the system jruby, we need to make sure our jvm process
-# uses at least 1g of memory, If we don't do this we can get OOM issues when
-# installing gems. See https://github.com/elastic/logstash/issues/5179
-export JRUBY_OPTS="-J-Xmx1g"
+export JRUBY_OPTS="-J-Xmx2g"
+export GRADLE_OPTS="-Xmx2g -Dorg.gradle.daemon=false"
 
-mkdir -p build/docs
-rm -rf build/docs/*
-
-grep -q -F "logstash-docgen" Gemfile || echo 'gem "logstash-docgen", :path => "./tools/logstash-docgen"' >> Gemfile
 rake bootstrap
+# needed to workaround `group => :development`
 rake test:install-core
-rake docs:generate-plugins
+rake plugin:install-default
+echo "Generate json with plugins version"
+# Since we generate the lock file and we try to resolve dependencies we will need
+# to use the bundle wrapper to correctly find the rake cli. If we don't do this we
+# will get an activation error,
+./bin/bundle exec rake generate_plugins_version

@@ -1,7 +1,7 @@
 [[glob-support]]
 === Glob Pattern Support
 
-Logstash supports the following patterns wherever glob patters are allowed:
+Logstash supports the following patterns wherever glob patterns are allowed:
 
 *`*`*::
 Match any file. You can also use an `*` to restrict other values in the glob.
@@ -41,7 +41,7 @@ Matches config files ending in `.conf` in the specified path.
 `"/var/log/*.log"`::
 Matches log files ending in `.log` in the specified path.
 
-`"/var/log/**/*.log`::
+`"/var/log/**/*.log"`::
 Matches log files ending in `.log` in subdirectories under the specified path.
 
 `"/path/to/logs/{app1,app2,app3}/data.log"`::

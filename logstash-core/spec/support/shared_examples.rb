@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 # Define the common operation that both the `NullMetric` class and the Namespaced class should answer.
 shared_examples "metrics commons operations" do
   let(:key) { "galaxy" }
@@ -97,7 +113,7 @@ end
 
 shared_examples "not found" do
   it "should return a 404 to unknown request" do
-    do_request { get "/i_want_to_believe-#{Time.now.to_i}" }
+    get "/i_want_to_believe-#{Time.now.to_i}"
     expect(last_response.content_type).to eq("application/json")
     expect(last_response).not_to be_ok
     expect(last_response.status).to eq(404)
@@ -105,4 +121,3 @@ shared_examples "not found" do
     expect(LogStash::Json.load(last_response.body)["path"]).not_to be_nil
   end
 end
-

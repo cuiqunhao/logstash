@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
 require "logstash/plugins/registry"
 require "logstash/inputs/base"
@@ -53,13 +69,37 @@ describe LogStash::Plugins::Registry do
   end
 
   context "when loading plugin manually configured" do
-    it "should return the plugin" do
-      class SimplePlugin
-      end
+    let(:simple_plugin) { Class.new }
 
+    it "should return the plugin" do
       expect { registry.lookup("filter", "simple_plugin") }.to raise_error(LoadError)
-      registry.add(:filter, "simple_plugin", SimplePlugin)
-      expect(registry.lookup("filter", "simple_plugin")).to eq(SimplePlugin)
+      registry.add(:filter, "simple_plugin", simple_plugin)
+      expect(registry.lookup("filter", "simple_plugin")).to eq(simple_plugin)
+    end
+
+    it "should be possible to remove the plugin" do
+      registry.add(:filter, "simple_plugin", simple_plugin)
+      expect(registry.lookup("filter", "simple_plugin")).to eq(simple_plugin)
+      registry.remove(:filter, "simple_plugin")
+      expect { registry.lookup("filter", "simple_plugin") }.to raise_error(LoadError)
+    end
+
+    it "doesn't add multiple time the same plugin" do
+      plugin1 = Class.new
+      plugin2 = Class.new
+
+      registry.add(:filter, "simple_plugin", plugin1)
+      registry.add(:filter, "simple_plugin", plugin2)
+
+      expect(registry.plugins_with_type(:filter)).to include(plugin1)
+      expect(registry.plugins_with_type(:filter).size).to eq(1)
+    end
+
+    it "allow you find plugin by type" do
+      registry.add(:filter, "simple_plugin", simple_plugin)
+
+      expect(registry.plugins_with_type(:filter)).to include(simple_plugin)
+      expect(registry.plugins_with_type(:modules)).to match([])
     end
   end
 end

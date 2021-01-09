@@ -1,22 +1,31 @@
-# encoding: utf-8
-require "logstash/instrument/metric_type/base"
-require "concurrent/atomic_reference/mutex_atomic"
-require "logstash/json"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
+java_import org.logstash.instrument.metrics.gauge.LazyDelegatingGauge
 module LogStash module Instrument module MetricType
-  class Gauge < Base
-    def initialize(namespaces, key)
-      super(namespaces, key)
+  class Gauge < LazyDelegatingGauge
 
-      @gauge = Concurrent::MutexAtomicReference.new()
+    def initialize(namespaces, key)
+      super(key.to_s)
     end
 
     def execute(action, value = nil)
-      @gauge.set(value)
+      send(action, value)
     end
 
-    def value
-      @gauge.get
-    end
   end
 end; end; end

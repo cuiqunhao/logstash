@@ -1,590 +1,552 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
 require "stud/temporary"
 require "logstash/inputs/generator"
+require "logstash/config/source/local"
 require_relative "../support/mocks_classes"
 require "fileutils"
 require_relative "../support/helpers"
+require_relative "../support/matchers"
+require 'timeout'
+
+java_import org.logstash.Timestamp
 
 describe LogStash::Agent do
 
-  let(:agent_settings) { LogStash::SETTINGS }
-  let(:agent_args) { {} }
-  let(:pipeline_settings) { agent_settings.clone }
-  let(:pipeline_args) { {} }
-  let(:config_file) { Stud::Temporary.pathname }
-  let(:config_file_txt) { "input { generator { count => 100000 } } output { }" }
+  shared_examples "all Agent tests" do
 
-    subject { LogStash::Agent.new(agent_settings) }
-
-  before :each do
-    # This MUST run first, before `subject` is invoked to ensure clean state
-    clear_data_dir
-
-    File.open(config_file, "w") { |f| f.puts config_file_txt }
-    agent_args.each do |key, value|
-      agent_settings.set(key, value)
-      pipeline_settings.set(key, value)
-    end
-    pipeline_args.each do |key, value|
-      pipeline_settings.set(key, value)
-    end
-  end
-
-  after :each do
-    LogStash::SETTINGS.reset
-    File.unlink(config_file)
-  end
-
-  it "fallback to hostname when no name is provided" do
-    expect(LogStash::Agent.new.name).to eq(Socket.gethostname)
-  end
-
-  describe "register_pipeline" do
-    let(:pipeline_id) { "main" }
+    let(:agent_settings) { mock_settings({}) }
+    let(:agent_args) { {} }
+    let(:pipeline_settings) { agent_settings.clone }
+    let(:pipeline_args) { {} }
+    let(:default_pipeline_id) { agent_settings.get("pipeline.id") }
     let(:config_string) { "input { } filter { } output { }" }
-    let(:agent_args) do
-      {
-        "config.string" => config_string,
-        "config.reload.automatic" => true,
-        "config.reload.interval" => 0.01,
-        "pipeline.workers" => 4,
-      }
+    let(:config_file) { Stud::Temporary.pathname }
+    let(:config_file_txt) { config_string }
+    let(:default_source_loader) do
+      sl = LogStash::Config::SourceLoader.new
+      sl.add_source(LogStash::Config::Source::Local.new(agent_settings))
+      sl
     end
+    let(:logger) { double("logger") }
+    let(:timeout) { 160 } #seconds
 
-    it "should delegate settings to new pipeline" do
-      expect(LogStash::Pipeline).to receive(:new) do |arg1, arg2|
-        expect(arg1).to eq(config_string)
-        expect(arg2.to_hash).to include(agent_args)
-      end
-      subject.register_pipeline(pipeline_id, agent_settings)
-    end
-  end
-
-  describe "#id" do
-    let(:config_file_txt) { "" }
-    let(:id_file_data) { File.open(subject.id_path) {|f| f.read } }
-
-    it "should return a UUID" do
-      expect(subject.id).to be_a(String)
-      expect(subject.id.size).to be > 0
-    end
-
-    it "should write out the persistent UUID" do
-      expect(id_file_data).to eql(subject.id)
-    end
-  end
-
-    describe "#execute" do
-    let(:config_file_txt) { "input { generator { count => 100000 } } output { }" }
+    subject { LogStash::Agent.new(agent_settings, default_source_loader) }
 
     before :each do
-      allow(subject).to receive(:start_webserver).and_return(false)
-      allow(subject).to receive(:stop_webserver).and_return(false)
-    end
+      # This MUST run first, before `subject` is invoked to ensure clean state
+      clear_data_dir
 
-    context "when auto_reload is false" do
-      let(:agent_args) do
-        {
-          "config.reload.automatic" => false,
-          "path.config" => config_file
-        }
+      File.open(config_file, "w") { |f| f.puts(config_file_txt) }
+
+      agent_args.each do |key, value|
+        agent_settings.set(key, value)
+        pipeline_settings.set(key, value)
       end
-      let(:pipeline_id) { "main" }
-
-      before(:each) do
-        subject.register_pipeline(pipeline_id, pipeline_settings)
+      pipeline_args.each do |key, value|
+        pipeline_settings.set(key, value)
       end
-
-      context "if state is clean" do
-        before :each do
-          allow(subject).to receive(:running_pipelines?).and_return(true)
-          allow(subject).to receive(:sleep)
-          allow(subject).to receive(:clean_state?).and_return(false)
-        end
-
-        it "should not reload_state!" do
-          expect(subject).to_not receive(:reload_state!)
-          t = Thread.new { subject.execute }
-          sleep 0.1
-          Stud.stop!(t)
-          t.join
-          subject.shutdown
-        end
-      end
-
-      context "when calling reload_pipeline!" do
-        context "with a config that contains reload incompatible plugins" do
-          let(:second_pipeline_config) { "input { stdin {} } filter { } output { }" }
-
-          it "does not upgrade the new config" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to_not receive(:upgrade_pipeline)
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            subject.send(:"reload_pipeline!", "main")
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-            subject.shutdown
-          end
-        end
-
-        context "with a config that does not contain reload incompatible plugins" do
-          let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
-
-          it "does upgrade the new config" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to receive(:upgrade_pipeline).once.and_call_original
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            subject.send(:"reload_pipeline!", "main")
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-
-            subject.shutdown
-          end
-        end
-
-      end
-      context "when calling reload_state!" do
-        context "with a pipeline with auto reloading turned off" do
-          let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
-          let(:pipeline_args) { { "config.reload.automatic" => false } }
-
-          it "does not try to reload the pipeline" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to_not receive(:reload_pipeline!)
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            subject.reload_state!
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-
-            subject.shutdown
-          end
-        end
-
-        context "with a pipeline with auto reloading turned on" do
-          let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
-          let(:pipeline_args) { { "config.reload.automatic" => true } }
-
-          it "tries to reload the pipeline" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to receive(:reload_pipeline!).once.and_call_original
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            subject.reload_state!
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-
-            subject.shutdown
-          end
-        end
-      end
-    end
-
-    context "when auto_reload is true" do
-      let(:agent_args) do
-        {
-          "config.reload.automatic" => true,
-          "config.reload.interval" => 0.01,
-          "path.config" => config_file,
-        }
-      end
-      let(:pipeline_id) { "main" }
-
-      before(:each) do
-        subject.register_pipeline(pipeline_id, pipeline_settings)
-      end
-
-      context "if state is clean" do
-        it "should periodically reload_state" do
-          allow(subject).to receive(:clean_state?).and_return(false)
-          t = Thread.new { subject.execute }
-          sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-          expect(subject).to receive(:reload_state!).at_least(2).times
-          sleep 0.1
-          Stud.stop!(t)
-          t.join
-          subject.shutdown
-        end
-      end
-
-      context "when calling reload_state!" do
-        context "with a config that contains reload incompatible plugins" do
-          let(:second_pipeline_config) { "input { stdin {} } filter { } output { }" }
-
-          it "does not upgrade the new config" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to_not receive(:upgrade_pipeline)
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-            subject.shutdown
-          end
-        end
-
-        context "with a config that does not contain reload incompatible plugins" do
-          let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
-
-          it "does upgrade the new config" do
-            t = Thread.new { subject.execute }
-            sleep 0.01 until subject.running_pipelines? && subject.pipelines.values.first.ready?
-            expect(subject).to receive(:upgrade_pipeline).once.and_call_original
-            File.open(config_file, "w") { |f| f.puts second_pipeline_config }
-            sleep 0.1
-            Stud.stop!(t)
-            t.join
-            subject.shutdown
-          end
-        end
-      end
-    end
-  end
-
-  describe "#reload_state!" do
-    let(:pipeline_id) { "main" }
-    let(:first_pipeline_config) { "input { } filter { } output { }" }
-    let(:second_pipeline_config) { "input { generator {} } filter { } output { }" }
-    let(:pipeline_args) { {
-      "config.string" => first_pipeline_config,
-      "pipeline.workers" => 4,
-      "config.reload.automatic" => true
-    } }
-
-    before(:each) do
-      subject.register_pipeline(pipeline_id, pipeline_settings)
-    end
-
-    context "when fetching a new state" do
-      it "upgrades the state" do
-        expect(subject).to receive(:fetch_config).and_return(second_pipeline_config)
-        expect(subject).to receive(:upgrade_pipeline).with(pipeline_id, kind_of(LogStash::Pipeline))
-        subject.reload_state!
-      end
-    end
-    context "when fetching the same state" do
-      it "doesn't upgrade the state" do
-        expect(subject).to receive(:fetch_config).and_return(first_pipeline_config)
-        expect(subject).to_not receive(:upgrade_pipeline)
-        subject.reload_state!
-      end
-    end
-  end
-
-  describe "Environment Variables In Configs" do
-    let(:pipeline_config) { "input { generator { message => '${FOO}-bar' } } filter { } output { }" }
-    let(:agent_args) { {
-      "config.reload.automatic" => false,
-      "config.reload.interval" => 0.01,
-      "config.string" => pipeline_config
-    } }
-    let(:pipeline_id) { "main" }
-
-    context "environment variable templating" do
-      before :each do
-        @foo_content = ENV["FOO"]
-        ENV["FOO"] = "foo"
-      end
-
-      after :each do
-        ENV["FOO"] = @foo_content
-      end
-
-      it "doesn't upgrade the state" do
-        allow(subject).to receive(:fetch_config).and_return(pipeline_config)
-        subject.register_pipeline(pipeline_id, pipeline_settings)
-        expect(subject.pipelines[pipeline_id].inputs.first.message).to eq("foo-bar")
-      end
-    end
-  end
-
-  describe "#upgrade_pipeline" do
-    let(:pipeline_id) { "main" }
-    let(:pipeline_config) { "input { } filter { } output { }" }
-    let(:pipeline_args) { {
-      "config.string" => pipeline_config,
-      "pipeline.workers" => 4
-    } }
-    let(:new_pipeline_config) { "input { generator {} } output { }" }
-
-    before(:each) do
-      subject.register_pipeline(pipeline_id, pipeline_settings)
-    end
-
-    after(:each) do
-      subject.shutdown
-    end
-
-    context "when the upgrade fails" do
-      before :each do
-        allow(subject).to receive(:fetch_config).and_return(new_pipeline_config)
-        allow(subject).to receive(:create_pipeline).and_return(nil)
-        allow(subject).to receive(:stop_pipeline)
-      end
-
-      it "leaves the state untouched" do
-        subject.send(:"reload_pipeline!", pipeline_id)
-        expect(subject.pipelines[pipeline_id].config_str).to eq(pipeline_config)
-      end
-
-      context "and current state is empty" do
-        it "should not start a pipeline" do
-          expect(subject).to_not receive(:start_pipeline)
-          subject.send(:"reload_pipeline!", pipeline_id)
-        end
-      end
-    end
-
-    context "when the upgrade succeeds" do
-      let(:new_config) { "input { generator { count => 1 } } output { }" }
-      before :each do
-        allow(subject).to receive(:fetch_config).and_return(new_config)
-        allow(subject).to receive(:stop_pipeline)
-        allow(subject).to receive(:start_pipeline)
-      end
-      it "updates the state" do
-        subject.send(:"reload_pipeline!", pipeline_id)
-        expect(subject.pipelines[pipeline_id].config_str).to eq(new_config)
-      end
-      it "starts the pipeline" do
-        expect(subject).to receive(:stop_pipeline)
-        expect(subject).to receive(:start_pipeline)
-        subject.send(:"reload_pipeline!", pipeline_id)
-      end
-    end
-  end
-
-  describe "#fetch_config" do
-    let(:cli_config) { "filter { drop { } } " }
-    let(:agent_args) { { "config.string" => cli_config, "path.config" => config_file } }
-
-    it "should join the config string and config path content" do
-      fetched_config = subject.send(:fetch_config, agent_settings)
-      expect(fetched_config.strip).to eq(cli_config + IO.read(config_file).strip)
-    end
-  end
-
-  context "#started_at" do
-    it "return the start time when the agent is started" do
-      expect(described_class::STARTED_AT).to be_kind_of(Time)
-    end
-  end
-
-  context "#uptime" do
-    it "return the number of milliseconds since start time" do
-      expect(subject.uptime).to be >= 0
-    end
-  end
-
-
-  context "metrics after config reloading" do
-    let!(:config) { "input { generator { } } output { dummyoutput { } }" }
-    let!(:config_path) do
-      f = Stud::Temporary.file
-      f.write(config)
-      f.fsync
-      f.close
-      f.path
-    end
-    let(:pipeline_args) do
-      {
-        "pipeline.workers" => 2,
-        "path.config" => config_path
-      }
-    end
-
-    let(:agent_args) do
-      {
-        "config.reload.automatic" => false,
-        "pipeline.batch.size" => 1,
-        "metric.collect" => true
-      }
-    end
-
-    # We need to create theses dummy classes to know how many
-    # events where actually generated by the pipeline and successfully send to the output.
-    # Theses values are compared with what we store in the metric store.
-    class DummyOutput2 < LogStash::Outputs::DroppingDummyOutput; end
-
-    let!(:dummy_output) { LogStash::Outputs::DroppingDummyOutput.new }
-    let!(:dummy_output2) { DummyOutput2.new }
-    let(:initial_generator_threshold) { 1000 }
-
-    before :each do
-      allow(LogStash::Outputs::DroppingDummyOutput).to receive(:new).at_least(:once).with(anything).and_return(dummy_output)
-      allow(DummyOutput2).to receive(:new).at_least(:once).with(anything).and_return(dummy_output2)
-
-      allow(LogStash::Plugin).to receive(:lookup).with("input", "generator").and_return(LogStash::Inputs::Generator)
-      allow(LogStash::Plugin).to receive(:lookup).with("codec", "plain").and_return(LogStash::Codecs::Plain)
-      allow(LogStash::Plugin).to receive(:lookup).with("output", "dummyoutput").and_return(LogStash::Outputs::DroppingDummyOutput)
-      allow(LogStash::Plugin).to receive(:lookup).with("output", "dummyoutput2").and_return(DummyOutput2)
-
-      @abort_on_exception = Thread.abort_on_exception
-      Thread.abort_on_exception = true
-
-      @t = Thread.new do
-        subject.register_pipeline("main",  pipeline_settings)
-        subject.execute
-      end
-
-      # wait for some events to reach the dummy_output
-      sleep(0.01) until dummy_output.events_received > initial_generator_threshold
+      allow(described_class).to receive(:logger).and_return(logger)
+      [:debug, :info, :error, :fatal, :trace].each {|level| allow(logger).to receive(level) }
+      [:debug?, :info?, :error?, :fatal?, :trace?].each {|level| allow(logger).to receive(level) }
     end
 
     after :each do
-      begin
+      subject.shutdown
+      LogStash::SETTINGS.reset
+
+      FileUtils.rm(config_file)
+      FileUtils.rm_rf(subject.id_path)
+    end
+
+    it "fallback to hostname when no name is provided" do
+      expect(LogStash::Agent.new(agent_settings, default_source_loader).name).to eq(Socket.gethostname)
+    end
+
+    describe "adding a new pipeline" do
+      let(:agent_args) { { "config.string" => config_string } }
+
+      it "should delegate settings to new pipeline" do
+        expect(LogStash::JavaPipeline).to receive(:new) do |arg1, arg2|
+          expect(arg1.to_s).to eq(config_string)
+          expect(arg2.to_hash).to include(agent_args)
+        end
+        subject.converge_state_and_update
+      end
+    end
+
+    describe "#id" do
+      let(:id_file_data) { File.open(subject.id_path) {|f| f.read } }
+
+      it "should return a UUID" do
+        expect(subject.id).to be_a(String)
+        expect(subject.id.size).to be > 0
+      end
+
+      it "should write out the persistent UUID" do
+        expect(id_file_data).to eql(subject.id)
+      end
+    end
+
+    describe "ephemeral_id" do
+      it "create a ephemeral id at creation time" do
+        expect(subject.ephemeral_id).to_not be_nil
+      end
+    end
+
+    describe "#execute" do
+      let(:config_string) { "input { generator { id => 'old'} } output { }" }
+      let(:mock_config_pipeline) { mock_pipeline_config(:main, config_string, pipeline_settings) }
+
+      let(:source_loader) { TestSourceLoader.new(mock_config_pipeline) }
+      subject { described_class.new(agent_settings, source_loader) }
+
+      before :each do
+        allow(subject).to receive(:start_webserver).and_return(false)
+        allow(subject).to receive(:stop_webserver).and_return(false)
+      end
+
+      context "when auto_reload is false" do
+        let(:agent_args) { { "config.reload.automatic" => false, "path.config" => config_file } }
+
+        context "verify settings" do
+          it "should not auto reload" do
+            expect(subject.settings.get("config.reload.automatic")).to eq(false)
+          end
+        end
+
+        context "if state is clean" do
+          before :each do
+            allow(subject).to receive(:running_user_defined_pipelines?).and_return(true)
+            allow(subject).to receive(:no_pipeline?).and_return(false)
+          end
+
+          it "should not converge state more than once" do
+            expect(subject).to receive(:converge_state_and_update).once
+            t = Thread.new { subject.execute }
+
+            Stud.stop!(t)
+            t.join
+            subject.shutdown
+          end
+        end
+
+        context "when calling reloading a pipeline" do
+          context "with a config that contains reload incompatible plugins" do
+            let(:second_pipeline_config) { "input { stdin {} } filter { } output { }" }
+            let(:mock_second_pipeline_config) { mock_pipeline_config(:main, second_pipeline_config, pipeline_settings) }
+
+            let(:source_loader) { TestSequenceSourceLoader.new(mock_config_pipeline, mock_second_pipeline_config)}
+
+            it "does not upgrade the new config" do
+              t = Thread.new { subject.execute }
+              wait(timeout)
+                  .for { subject.running_pipelines? && subject.running_pipelines.values.first.ready? }
+                  .to eq(true)
+              expect(subject.converge_state_and_update).not_to be_a_successful_converge
+              expect(subject).to have_running_pipeline?(mock_config_pipeline)
+
+              Stud.stop!(t)
+              t.join
+              subject.shutdown
+            end
+          end
+
+          context "with a config that does not contain reload incompatible plugins" do
+            let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
+            let(:mock_second_pipeline_config) { mock_pipeline_config(:main, second_pipeline_config, pipeline_settings) }
+
+            let(:source_loader) { TestSequenceSourceLoader.new(mock_config_pipeline, mock_second_pipeline_config)}
+
+            it "does upgrade the new config" do
+              t = Thread.new { subject.execute }
+              Timeout.timeout(timeout) do
+                sleep(0.1) until subject.running_pipelines_count > 0 && subject.running_pipelines.values.first.ready?
+              end
+
+              expect(subject.converge_state_and_update).to be_a_successful_converge
+              expect(subject).to have_running_pipeline?(mock_second_pipeline_config)
+
+              Stud.stop!(t)
+              t.join
+              subject.shutdown
+            end
+          end
+
+        end
+        context "when calling reload_state!" do
+          context "with a pipeline with auto reloading turned off" do
+            let(:second_pipeline_config) { "input { generator { } } filter { } output { }" }
+            let(:pipeline_args) { { "pipeline.reloadable" => false } }
+            let(:mock_second_pipeline_config) { mock_pipeline_config(:main, second_pipeline_config, mock_settings(pipeline_args)) }
+
+            let(:source_loader) { TestSequenceSourceLoader.new(mock_config_pipeline, mock_second_pipeline_config)}
+
+            it "does not try to reload the pipeline" do
+              t = Thread.new { subject.execute }
+              Timeout.timeout(timeout) do
+                sleep(0.1) until subject.running_pipelines? && subject.running_pipelines.values.first.running?
+              end
+              expect(subject.converge_state_and_update).not_to be_a_successful_converge
+              expect(subject).to have_running_pipeline?(mock_config_pipeline)
+
+              Stud.stop!(t)
+              t.join
+              subject.shutdown
+            end
+          end
+
+          context "with a pipeline with auto reloading turned on" do
+            let(:second_pipeline_config) { "input { generator { id => 'second' } } filter { } output { }" }
+            let(:pipeline_args) { { "pipeline.reloadable" => true } }
+            let(:mock_second_pipeline_config) { mock_pipeline_config(:main, second_pipeline_config, mock_settings(pipeline_args)) }
+            let(:source_loader) { TestSequenceSourceLoader.new(mock_config_pipeline, mock_second_pipeline_config)}
+
+            it "tries to reload the pipeline" do
+              t = Thread.new { subject.execute }
+              Timeout.timeout(timeout) do
+                sleep(0.1) until subject.running_pipelines? && subject.running_pipelines.values.first.running?
+              end
+
+              expect(subject.converge_state_and_update).to be_a_successful_converge
+              expect(subject).to have_running_pipeline?(mock_second_pipeline_config)
+
+              Stud.stop!(t)
+              t.join
+              subject.shutdown
+            end
+          end
+        end
+      end
+    end
+
+    describe "Environment Variables In Configs" do
+      let(:temporary_file) { Stud::Temporary.file.path }
+
+      let(:pipeline_config) { "input { generator { message => '${FOO}-bar' count => 1 } } filter { } output { file { path => '#{temporary_file}' } }" }
+      let(:agent_args) { {
+        "config.reload.automatic" => false,
+        "config.reload.interval" => "10ms",
+        "config.string" => pipeline_config
+      } }
+
+      let(:source_loader) {
+        TestSourceLoader.new(mock_pipeline_config(default_pipeline_id, pipeline_config))
+      }
+
+      subject { described_class.new(mock_settings(agent_args), source_loader) }
+
+      after do
         subject.shutdown
-        Stud.stop!(@t)
-        @t.join
-      ensure
-        Thread.abort_on_exception = @abort_on_exception
+      end
+
+      context "environment variable templating" do
+        before :each do
+          @foo_content = ENV["FOO"]
+          ENV["FOO"] = "foo"
+        end
+
+        after :each do
+          ENV["FOO"] = @foo_content
+        end
+
+        it "are evaluated at plugins creation" do
+          expect(subject.converge_state_and_update).to be_a_successful_converge
+
+          # Since the pipeline is running in another threads
+          # the content of the file wont be instant.
+          Timeout.timeout(timeout) do
+            sleep(0.1) until ::File.size(temporary_file) > 0
+          end
+          json_document = LogStash::Json.load(File.read(temporary_file).chomp)
+          expect(json_document["message"]).to eq("foo-bar")
+        end
       end
     end
 
-    context "when reloading a good config" do
-      let(:new_config_generator_counter) { 500 }
-      let(:new_config) { "input { generator { count => #{new_config_generator_counter} } } output { dummyoutput2 {} }" }
-      before :each do
+    describe "#upgrade_pipeline" do
+      let(:pipeline_config) { "input { generator {} } filter { } output { }" }
+      let(:pipeline_args) { { "pipeline.workers" => 4 } }
+      let(:mocked_pipeline_config) { mock_pipeline_config(default_pipeline_id, pipeline_config, mock_settings(pipeline_args))}
 
-        File.open(config_path, "w") do |f|
-          f.write(new_config)
-          f.fsync
+      let(:new_pipeline_config) { "input generator {} } output { }" }
+      let(:mocked_new_pipeline_config) { mock_pipeline_config(default_pipeline_id, new_pipeline_config, mock_settings(pipeline_args))}
+      let(:source_loader) { TestSequenceSourceLoader.new(mocked_pipeline_config, mocked_new_pipeline_config)}
+
+      subject { described_class.new(agent_settings, source_loader) }
+
+      before(:each) do
+        # Run the initial config
+        expect(subject.converge_state_and_update).to be_a_successful_converge
+      end
+
+      after(:each) do
+        # new pipelines will be created part of the upgrade process so we need
+        # to close any initialized pipelines
+        subject.shutdown
+      end
+
+      context "when the upgrade fails" do
+        it "leaves the state untouched" do
+          expect(subject.converge_state_and_update).not_to be_a_successful_converge
+          expect(subject.get_pipeline(default_pipeline_id).config_str).to eq(pipeline_config)
         end
 
-        subject.send(:"reload_pipeline!", "main")
-
-        # wait until pipeline restarts
-        sleep(0.01) until dummy_output2.events_received > 0
+        # TODO(ph): This valid?
+        xcontext "and current state is empty" do
+          it "should not start a pipeline" do
+            expect(subject).to_not receive(:start_pipeline)
+            subject.send(:"reload_pipeline!", default_pipeline_id)
+          end
+        end
       end
 
-      it "resets the pipeline metric collector" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:events][:in].value
-        expect(value).to be <= new_config_generator_counter
-      end
+      context "when the upgrade succeeds" do
+        let(:new_config) { "input { generator { id => 'abc' count => 1000000 } } output { }" }
+        let(:mocked_new_pipeline_config) { mock_pipeline_config(default_pipeline_id, new_config, mock_settings(pipeline_args)) }
 
-      it "does not reset the global event count" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/events")[:stats][:events][:in].value
-        expect(value).to be > initial_generator_threshold
-      end
-
-      it "increases the successful reload count" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:successes].value
-        instance_value = snapshot.metric_store.get_with_path("/stats")[:stats][:reloads][:successes].value
-        expect(value).to eq(1)
-        expect(instance_value).to eq(1)
-      end
-
-      it "does not set the failure reload timestamp" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_failure_timestamp].value
-        expect(value).to be(nil)
-      end
-
-      it "sets the success reload timestamp" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_success_timestamp].value
-        expect(value).to be_a(LogStash::Timestamp)
-      end
-
-      it "does not set the last reload error" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_error].value
-        expect(value).to be(nil)
-      end
-
-    end
-
-    context "when reloading a bad config" do
-      let(:new_config) { "input { generator { count => " }
-      let(:new_config_generator_counter) { 500 }
-      before :each do
-
-        File.open(config_path, "w") do |f|
-          f.write(new_config)
-          f.fsync
+        it "updates the state" do
+          expect(subject.converge_state_and_update).to be_a_successful_converge
+          expect(subject.get_pipeline(default_pipeline_id).config_str).to eq(new_config)
         end
 
-        subject.send(:"reload_pipeline!", "main")
-      end
-
-      it "does not increase the successful reload count" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:successes].value
-        expect(value).to eq(0)
-      end
-
-      it "does not set the successful reload timestamp" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_success_timestamp].value
-        expect(value).to be(nil)
-      end
-
-      it "sets the failure reload timestamp" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_failure_timestamp].value
-        expect(value).to be_a(LogStash::Timestamp)
-      end
-
-      it "sets the last reload error" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_error].value
-        expect(value).to be_a(Hash)
-        expect(value).to include(:message, :backtrace)
-      end
-
-      it "increases the failed reload count" do
-        snapshot = subject.metric.collector.snapshot_metric
-        value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:failures].value
-        expect(value).to be > 0
+        it "starts the pipeline" do
+          expect(subject.converge_state_and_update).to be_a_successful_converge
+          expect(subject.get_pipeline(default_pipeline_id).running?).to be_truthy
+        end
       end
     end
 
-    context "when reloading a config that raises exception on pipeline.run" do
-      let(:new_config) { "input { generator { count => 10000 } }" }
-      let(:new_config_generator_counter) { 500 }
-
-      class BrokenGenerator < LogStash::Inputs::Generator
-        def register
-          raise ArgumentError
-        end
+    context "#started_at" do
+      it "return the start time when the agent is started" do
+        expect(described_class::STARTED_AT).to be_kind_of(Time)
       end
+    end
 
-      before :each do
-
-        allow(LogStash::Plugin).to receive(:lookup).with("input", "generator").and_return(BrokenGenerator)
-
-        File.open(config_path, "w") do |f|
-          f.write(new_config)
-          f.fsync
-        end
-
+    context "#uptime" do
+      it "return the number of milliseconds since start time" do
+        expect(subject.uptime).to be >= 0
       end
+    end
 
-      it "does not increase the successful reload count" do
-        expect { subject.send(:"reload_pipeline!", "main") }.to_not change {
-          snapshot = subject.metric.collector.snapshot_metric
-          reload_metrics = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads]
-          reload_metrics[:successes].value
+    context "metrics after config reloading" do
+
+      let(:initial_generator_threshold) { 1000 }
+      let(:original_config_output) { Stud::Temporary.pathname }
+      let(:new_config_output) { Stud::Temporary.pathname }
+
+      let(:config_file_txt) { "input { generator { count => #{initial_generator_threshold*2} } } output { file { path => '#{original_config_output}'} }" }
+
+      let(:agent_args) do
+        {
+          "metric.collect" => true,
+          "path.config" => config_file
         }
       end
 
-      it "increases the failured reload count" do
-        expect { subject.send(:"reload_pipeline!", "main") }.to change {
-          snapshot = subject.metric.collector.snapshot_metric
-          reload_metrics = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads]
-          reload_metrics[:failures].value
-        }.by(1)
+      subject { described_class.new(agent_settings, default_source_loader) }
+
+      let(:agent_thread) do
+        # subject has to be called for the first time outside the thread because it could create a race condition
+        # with subsequent subject calls
+        s = subject
+        Thread.new { s.execute }
       end
+
+      before(:each) do
+        @abort_on_exception = Thread.abort_on_exception
+        Thread.abort_on_exception = true
+
+        agent_thread
+
+        # wait for some events to reach the dummy_output
+        Timeout.timeout(timeout) do
+          # wait for file existence otherwise it will raise exception on Windows
+          sleep(0.3) until ::File.exist?(original_config_output)
+          sleep(0.3) until IO.readlines(original_config_output).size > initial_generator_threshold
+        end
+
+        # write new config
+        File.open(config_file, "w") { |f| f.write(new_config) }
+      end
+
+      after :each do
+        begin
+          Stud.stop!(agent_thread) rescue nil # it may be dead already
+          agent_thread.join
+          subject.shutdown
+
+          FileUtils.rm(original_config_output)
+          FileUtils.rm(new_config_output) if File.exist?(new_config_output)
+        rescue
+            #don't care about errors here.
+        ensure
+          Thread.abort_on_exception = @abort_on_exception
+        end
+      end
+
+      context "when reloading a good config" do
+        let(:new_config_generator_counter) { 500 }
+        let(:new_config) { "input { generator { count => #{new_config_generator_counter} } } output { file { path => '#{new_config_output}'} }" }
+
+        before :each do
+          subject.converge_state_and_update
+
+          # wait for file existence otherwise it will raise exception on Windows
+          wait(timeout)
+            .for { ::File.exists?(new_config_output) && !::File.read(new_config_output).chomp.empty? }
+            .to eq(true)
+          # ensure the converge_state_and_update method has updated metrics by
+          # invoking the mutex
+          subject.running_pipelines?
+        end
+
+        it "resets the pipeline metric collector" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:events][:in].value
+          expect(value).to be <= new_config_generator_counter
+        end
+
+        it "does not reset the global event count" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/events")[:stats][:events][:in].value
+          expect(value).to be > initial_generator_threshold
+        end
+
+        it "increases the successful reload count" do
+          skip("This test fails randomly, tracked in https://github.com/elastic/logstash/issues/8005")
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:successes].value
+          expect(value).to eq(1)
+          instance_value = snapshot.metric_store.get_with_path("/stats")[:stats][:reloads][:successes].value
+          expect(instance_value).to eq(1)
+        end
+
+        it "does not set the failure reload timestamp" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_failure_timestamp].value
+          expect(value).to be(nil)
+        end
+
+        it "sets the success reload timestamp" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_success_timestamp].value
+          expect(value).to be_a(Timestamp)
+        end
+
+        it "does not set the last reload error" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_error].value
+          expect(value).to be(nil)
+        end
+      end
+
+      context "when reloading a bad config" do
+        let(:new_config) { "input { generator { count => " }
+        before(:each) { subject.converge_state_and_update }
+
+        it "does not increase the successful reload count" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:successes].value
+          expect(value).to eq(0)
+        end
+
+        it "does not set the successful reload timestamp" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_success_timestamp].value
+          expect(value).to be(nil)
+        end
+
+        it "sets the failure reload timestamp" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_failure_timestamp].value
+          expect(value).to be_a(Timestamp)
+        end
+
+        it "sets the last reload error" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:last_error].value
+          expect(value).to be_a(Hash)
+          expect(value).to include(:message, :backtrace)
+        end
+
+        it "increases the failed reload count" do
+          snapshot = subject.metric.collector.snapshot_metric
+          value = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads][:failures].value
+          expect(value).to be > 0
+        end
+      end
+
+      context "when reloading a config that raises exception on pipeline.run" do
+        let(:new_config) { "input { generator { count => 10000 } } output { null {} }" }
+        let(:agent_args) do
+          {
+            "config.reload.automatic" => false,
+            "pipeline.batch.size" => 1,
+            "metric.collect" => true,
+            "path.config" => config_file
+          }
+        end
+
+        class BrokenGenerator < LogStash::Inputs::Generator
+          def register
+            raise ArgumentError
+          end
+        end
+
+        before :each do
+          allow(LogStash::Plugin).to receive(:lookup).with("input", "generator").and_return(BrokenGenerator)
+        end
+
+        it "does not increase the successful reload count" do
+          expect { subject.converge_state_and_update }.to_not change {
+            snapshot = subject.metric.collector.snapshot_metric
+            reload_metrics = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads]
+            reload_metrics[:successes].value
+          }
+        end
+
+        it "increases the failures reload count" do
+          expect { subject.converge_state_and_update }.to change {
+            snapshot = subject.metric.collector.snapshot_metric
+            reload_metrics = snapshot.metric_store.get_with_path("/stats/pipelines")[:stats][:pipelines][:main][:reloads]
+            reload_metrics[:failures].value
+          }.by(1)
+        end
+      end
+    end
+  end
+
+  # running all agent tests both using memory and persisted queue is important to make sure we
+  # don't introduce regressions in the queue/pipeline initialization sequence which typically surface
+  # in agent tests and in particular around config reloading
+
+  describe "using memory queue" do
+    it_behaves_like "all Agent tests" do
+      let(:agent_settings) { mock_settings("queue.type" => "memory") }
+    end
+  end
+
+  describe "using persisted queue" do
+    it_behaves_like "all Agent tests" do
+      let(:agent_settings) { mock_settings("queue.type" => "persisted", "queue.drain" => true,
+                                           "queue.page_capacity" => "8mb", "queue.max_bytes" => "64mb") }
     end
   end
 end

@@ -1,6 +1,43 @@
 [[shutdown]]
 === Shutting Down Logstash
 
+If you're running {ls} as a service, use one of the following commands to stop it:
+
+* On systemd, use:
++
+[source,shell]
+----
+systemctl stop logstash
+----
+
+* On upstart, use: 
++
+[source,shell]
+----
+initctl stop logstash
+----
+
+* On sysv, use: 
++
+[source,shell]
+----
+/etc/init.d/logstash stop
+----
+
+If you're running {ls} directly in the console on a POSIX system, you can stop 
+it by sending SIGTERM to the {ls} process. For example:
+
+[source,shell]
+----
+kill -TERM {logstash_pid}
+----
+
+Alternatively, enter *Ctrl-C* in the console.
+
+
+
+==== What Happens During a Controlled Shutdown?
+
 When you attempt to shut down a running Logstash instance, Logstash performs several steps before it can safely shut down. It must:
 
 * Stop all input, filter and output plugins
@@ -30,8 +67,8 @@ Logstash safely whenever possible.
 [[shutdown-stall-example]]
 ==== Stall Detection Example
 
-In this example, slow filter execution prevents the pipeline from clean shutdown. By starting Logstash with the
-`--pipeline.unsafe_shutdown` flag, quitting with *Ctrl+C* results in an eventual shutdown that loses 20 events.
+In this example, slow filter execution prevents the pipeline from performing a clean shutdown. Because Logstash is
+started with the `--pipeline.unsafe_shutdown` flag, the shutdown results in the loss of 20 events.
 
 ========
 [source,shell]

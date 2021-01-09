@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/docgen/parser"
 require "logstash/docgen/task_runner"
 require "logstash/docgen/util"
@@ -14,8 +30,9 @@ module LogStash module Docgen
   # generation on a specific plugin.
   #
   # Since the doc generation need access to the current library/dependency and we
-  # dont want to polute the main exection namespace with libraries that could be incompatible
+  # dont want to pollute the main execution namespace with libraries that could be incompatible
   # each execution of the doc is is own process.
+  #
   #
   # Its a lot slower, but we know for sure that it uses the latest dependency for each plugins.
   class Plugin
@@ -23,13 +40,19 @@ module LogStash module Docgen
 
     GITHUB_URI = "https://github.com/logstash-plugins/%s"
 
-    BUNDLER_CMD = "bundler install --jobs 8 --quiet --path /tmp/vendor"
+    BUNDLER_CMD = "bundle install"
     RAKE_VENDOR_CMD = "bundle exec rake vendor"
     RAKE_DOC_ASCIIDOC = "bundle exec rake doc:asciidoc"
+    DOCUMENT_SEPARATOR = "~~~ASCIIDOC_DOCUMENT~~~\n"
 
     # Content needed to inject to make the generator work
     GEMFILE_CHANGES = "gem 'logstash-docgen', :path => \"#{File.expand_path(File.join(File.dirname(__FILE__), "..", "..", ".."))}\""
-    RAKEFILE_CHANGES = "require 'logstash/docgen/plugin_doc'"
+
+    # require devutils to fix an issue when the logger is not found
+    RAKEFILE_CHANGES = "
+    require 'logstash/devutils/rspec/spec_helper'
+    puts '#{DOCUMENT_SEPARATOR}'
+    require 'logstash/docgen/plugin_doc'"
 
     attr_reader :path, :full_name
 
@@ -46,8 +69,8 @@ module LogStash module Docgen
       full_name.split("-").last
     end
 
-    def generate(destination)
-      fetch
+    def generate(destination, config = {})
+      fetch if config.fetch(:skip_fetch, false)
       inject_docgen
       bundle_install
       rake_vendor
@@ -87,7 +110,8 @@ module LogStash module Docgen
       output = run_in_directory(RAKE_DOC_ASCIIDOC)
       destination = File.join(destination, "#{type}s")
       FileUtils.mkdir_p(destination)
-      IO.write(File.join(destination, "#{name}.asciidoc"), output.read)
+      content = output.read.split(DOCUMENT_SEPARATOR).last
+      IO.write(File.join(destination, "#{name}.asciidoc"), content)
     end
 
     def bundle_install
@@ -172,7 +196,7 @@ module LogStash module Docgen
 
       plugins.each do |plugin|
         task_runner.run(plugin.name) do
-          plugin.generate(@target)
+          plugin.generate(@target, config)
         end
       end
 

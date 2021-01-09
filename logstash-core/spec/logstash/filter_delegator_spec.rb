@@ -1,21 +1,39 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "spec_helper"
+require 'logstash/instrument/collector'
 require "logstash/filter_delegator"
-require "logstash/instrument/null_metric"
-require "logstash/event"
+require "support/shared_contexts"
 
 describe LogStash::FilterDelegator do
-  let(:logger) { double(:logger) }
+
+  include_context "execution_context"
+
   let(:filter_id) { "my-filter" }
   let(:config) do
     { "host" => "127.0.0.1", "id" => filter_id }
   end
-  let(:collector) { [] }
-  let(:metric) { LogStash::Instrument::NamespacedNullMetric.new(collector, :null) }
+  let(:collector) {LogStash::Instrument::Collector.new}
+  let(:metric) { LogStash::Instrument::Metric.new(collector).namespace(:null) }
   let(:events) { [LogStash::Event.new, LogStash::Event.new] }
 
   before :each do
-    allow(metric).to receive(:namespace).with(anything).and_return(metric)
+    allow(pipeline).to receive(:id).and_return(pipeline_id)
   end
 
   let(:plugin_klass) do
@@ -26,12 +44,11 @@ describe LogStash::FilterDelegator do
     end
   end
 
-  subject { described_class.new(logger, plugin_klass, metric, config) }
-
-  it "create a plugin with the passed options" do
-    expect(plugin_klass).to receive(:new).with(config).and_return(plugin_klass.new(config))
-    described_class.new(logger, plugin_klass, metric, config)
-  end
+  subject {
+    LogStash::Plugins::PluginFactory.filter_delegator(
+        described_class, plugin_klass, config, metric, execution_context
+    )
+  }
 
   context "when the plugin support flush" do
     let(:plugin_klass) do
@@ -49,14 +66,14 @@ describe LogStash::FilterDelegator do
     end
 
     it "defines a flush method" do
-      expect(subject.respond_to?(:flush)).to be_truthy
+      expect(subject.has_flush).to be_truthy
     end
 
     context "when the flush return events" do
       it "increments the out" do
         subject.multi_filter([LogStash::Event.new])
-        expect(metric).to receive(:increment).with(:out, 1)
         subject.flush({})
+        expect(collector.snapshot_metric.metric_store.get_with_path("/null")[:null]["my-filter".to_sym][:events][:out].value).to eq(1)
       end
     end
 
@@ -68,18 +85,15 @@ describe LogStash::FilterDelegator do
     end
 
     context "when the filter buffer events" do
-      before do
-        allow(metric).to receive(:increment).with(anything, anything)
-      end
 
       it "has incremented :in" do
-        expect(metric).to receive(:increment).with(:in, events.size)
         subject.multi_filter(events)
+        expect(collector.snapshot_metric.metric_store.get_with_path("/null")[:null]["my-filter".to_sym][:events][:in].value).to eq(events.size)
       end
 
       it "has not incremented :out" do
-        expect(metric).not_to receive(:increment).with(:out, anything)
         subject.multi_filter(events)
+        expect(collector.snapshot_metric.metric_store.get_with_path("/null")[:null]["my-filter".to_sym][:events][:out].value).to eq(0)
       end
     end
 
@@ -104,10 +118,10 @@ describe LogStash::FilterDelegator do
       end
 
       it "increments the in/out of the metric" do
-        expect(metric).to receive(:increment).with(:in, events.size)
-        expect(metric).to receive(:increment).with(:out, events.size * 2)
-
         subject.multi_filter(events)
+        event_metrics = collector.snapshot_metric.metric_store.get_with_path("/null")[:null]["my-filter".to_sym][:events]
+        expect(event_metrics[:in].value).to eq(events.size)
+        expect(event_metrics[:out].value).to eq(2 * events.size)
       end
     end
   end
@@ -129,14 +143,14 @@ describe LogStash::FilterDelegator do
     end
 
     it "doesnt define a flush method" do
-      expect(subject.respond_to?(:flush)).to be_falsey
+      expect(subject.has_flush).to be_falsey
     end
 
     it "increments the in/out of the metric" do
-      expect(metric).to receive(:increment).with(:in, events.size)
-      expect(metric).to receive(:increment).with(:out, events.size)
-
       subject.multi_filter(events)
+      event_metrics = collector.snapshot_metric.metric_store.get_with_path("/null")[:null]["my-filter".to_sym][:events]
+      expect(event_metrics[:in].value).to eq(events.size)
+      expect(event_metrics[:out].value).to eq(events.size)
     end
   end
 
@@ -146,14 +160,4 @@ describe LogStash::FilterDelegator do
     end
   end
 
-  context "delegate methods to the original plugin" do
-    # I am not testing the behavior of these methods
-    # this is done in the plugin tests. I just want to make sure
-    # the proxy delegates the methods.
-    LogStash::FilterDelegator::DELEGATED_METHODS.each do |method|
-      it "delegate method: `#{method}` to the filter" do
-        expect(subject.respond_to?(method))
-      end
-    end
-  end
 end

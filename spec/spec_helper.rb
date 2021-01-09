@@ -1,16 +1,38 @@
-# encoding: utf-8
-require_relative 'coverage_helper'
-# In order to archive an expected coverage analysis we need to eager load
-# all logstash code base, otherwise it will not get a good analysis.
-CoverageHelper.eager_load if ENV['COVERAGE']
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
 require "logstash/devutils/rspec/spec_helper"
 
 require "flores/rspec"
 require "flores/random"
 require "pathname"
-
-SUPPORT_DIR = Pathname.new(::File.join(::File.dirname(__FILE__), "support"))
+require "stud/task"
+require "logstash/devutils/rspec/spec_helper"
+require "support/resource_dsl_methods"
+require "support/mocks_classes"
+require "support/helpers"
+require "support/shared_contexts"
+require "support/shared_examples"
+require 'rspec/expectations'
+require "logstash/settings"
+require 'rack/test'
+require 'rspec'
+require "json"
+require 'logstash/runner'
 
 class JSONIOThingy < IO
   def initialize; end
@@ -22,28 +44,28 @@ class JSONIOThingy < IO
   end
 end
 
+# Refactor the suite to https://github.com/elastic/logstash/issues/7148
+RSpec::Expectations.configuration.on_potential_false_positives = :nothing
+
 RSpec.configure do |c|
   Flores::RSpec.configure(c)
-  c.before do
-    # TODO: commented out on post-merged in master - the logger has moved to log4j
-    #
-    #
-    # Force Cabin to always have a JSON subscriber.  The main purpose of this
-    # is to catch crashes in json serialization for our logs. JSONIOThingy
-    # exists to validate taht what LogStash::Logging::JSON emits is always
-    # valid JSON.
-    # jsonvalidator = JSONIOThingy.new
-    # allow(Cabin::Channel).to receive(:new).and_wrap_original do |m, *args|
-    #   logger = m.call(*args)
-    #   logger.level = :debug
-    #   logger.subscribe(LogStash::Logging::JSON.new(jsonvalidator))
-    #
-    #   logger
-    # end
+  c.include LogStashHelper
+  c.extend LogStashHelper
 
-    LogStash::SETTINGS.set("queue.type", "memory_acked")
-    LogStash::SETTINGS.set("queue.page_capacity", 1024 * 1024)
-    LogStash::SETTINGS.set("queue.max_events", 250)
+  # Some tests mess with LogStash::SETTINGS, and data on the filesystem can leak state
+  # from one spec to another; run each spec with its own temporary data directory for `path.data`
+  c.around(:each) do |example|
+    Dir.mktmpdir do |temp_directory|
+      # Some tests mess with the settings. This ensures one test cannot pollute another
+      LogStash::SETTINGS.reset
+
+      LogStash::SETTINGS.set("queue.type", "memory")
+      LogStash::SETTINGS.set("path.data", temp_directory)
+
+      LogStash::Util.set_thread_name("RSPEC Example #{example.full_description} (from: `#{example.location}`)") do
+        example.run
+      end
+    end
   end
 end
 

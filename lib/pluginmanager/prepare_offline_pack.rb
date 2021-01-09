@@ -1,10 +1,27 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/command"
 require "pluginmanager/errors"
 
 class LogStash::PluginManager::PrepareOfflinePack < LogStash::PluginManager::Command
   parameter "[PLUGIN] ...", "plugin name(s)", :attribute_name => :plugins_arg
-  option "--output", "OUTPUT", "output file", :default => ::File.join(LogStash::Environment::LOGSTASH_HOME, "logstash-offline-plugins-#{LOGSTASH_VERSION}.zip")
+  option "--output", "OUTPUT", "output zip file", :default => ::File.join(LogStash::Environment::LOGSTASH_HOME, "logstash-offline-plugins-#{LOGSTASH_VERSION}.zip")
+  option "--overwrite", :flag, "overwrite a previously generated package file", :default => false
 
   def execute
     validate_arguments!
@@ -21,7 +38,21 @@ class LogStash::PluginManager::PrepareOfflinePack < LogStash::PluginManager::Com
     # To silence some of debugs/info statements
     Paquet.ui = Paquet::SilentUI unless debug?
 
-    FileUtils.rm_rf(output) if ::File.exist?(output)
+    if File.directory?(output)
+      signal_error("Package creation cancelled: The specified output is a directory, you must specify a filename with a zip extension, provided output: #{output}.")
+    else
+      if File.extname(output).downcase != ".zip"
+        signal_error("Package creation cancelled: You must specify the zip extension for the provided filename: #{output}.")
+      end
+
+      if ::File.exists?(output)
+        if overwrite?
+          File.delete(output)
+        else
+          signal_error("Package creation cancelled: output file destination #{output} already exists.")
+        end
+      end
+    end
 
     LogStash::PluginManager::OfflinePluginPackager.package(plugins_arg, output)
 
@@ -45,7 +76,7 @@ You need to specify at least one plugin or use a wildcard expression.
 
 Examples:
 bin/logstash-plugin prepare-offline-pack logstash-input-beats
-bin/logstash-plugin prepare-offline-pack logstash-filter-jdbc logstash-input-beats
+bin/logstash-plugin prepare-offline-pack logstash-filter-kv logstash-input-beats
 bin/logstash-plugin prepare-offline-pack logstash-filter-*
 bin/logstash-plugin prepare-offline-pack logstash-filter-* logstash-input-beats
 
@@ -58,4 +89,3 @@ EOS
     end
   end
 end
-

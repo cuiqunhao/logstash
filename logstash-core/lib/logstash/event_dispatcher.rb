@@ -1,40 +1,18 @@
-# encoding: utf-8
-module LogStash
-  class EventDispatcher
-    java_import "java.util.concurrent.CopyOnWriteArrayList"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-    attr_reader :emitter
-
-    def initialize(emitter)
-      @emitter = emitter
-      @listeners = CopyOnWriteArrayList.new
-    end
-
-    # This operation is slow because we use a CopyOnWriteArrayList
-    # But the majority of the addition will be done at bootstrap time
-    # So add_listener shouldn't be called often at runtime.
-    #
-    # On the other hand the notification could be called really often.
-    def add_listener(listener)
-      @listeners.add(listener)
-    end
-
-    # This operation is slow because we use a `CopyOnWriteArrayList` as the backend, instead of a
-    # ConcurrentHashMap, but since we are mostly adding stuff and iterating the `CopyOnWriteArrayList`
-    # should provide a better performance.
-    #
-    # See note on add_listener, this method shouldn't be called really often.
-    def remove_listener(listener)
-      @listeners.remove(listener)
-    end
-
-    def fire(method_name, *arguments)
-      @listeners.each do |listener|
-        if listener.respond_to?(method_name)
-          listener.send(method_name, emitter, *arguments)
-        end
-      end
-    end
-    alias_method :execute, :fire
-  end
-end
+# Keeping this file for backwards compatibility with plugins that include it directly.

@@ -1,57 +1,16 @@
-# encoding: utf-8
-module LogStash module Plugins
-  # This calls allow logstash to expose the endpoints for listeners
-  class HooksRegistry
-    java_import "java.util.concurrent.ConcurrentHashMap"
-    java_import "java.util.concurrent.CopyOnWriteArrayList"
-
-    def initialize
-      @registered_emmitters = ConcurrentHashMap.new
-      @registered_hooks = ConcurrentHashMap.new
-    end
-
-    def register_emitter(emitter_scope, dispatcher)
-      @registered_emmitters.put(emitter_scope, dispatcher)
-      sync_hooks
-    end
-
-    def remove_emitter(emitter_scope)
-      @registered_emmitters.remove(emitter_scope)
-    end
-
-    def register_hooks(emitter_scope, callback)
-      callbacks = @registered_hooks.computeIfAbsent(emitter_scope) do
-        CopyOnWriteArrayList.new
-      end
-
-      callbacks.add(callback)
-      sync_hooks
-    end
-
-    def emmitters_count
-      @registered_emmitters.size
-    end
-
-    def hooks_count(emitter_scope = nil)
-      if emitter_scope.nil?
-        @registered_hooks.elements().collect(&:size).reduce(0, :+)
-      else
-        callbacks = @registered_hooks.get(emitter_scope)
-        callbacks.nil? ? 0 : @registered_hooks.get(emitter_scope).size
-      end
-    end
-
-    private
-    def sync_hooks
-      @registered_emmitters.each do |emitter, dispatcher|
-        listeners = @registered_hooks.get(emitter)
-
-        unless listeners.nil?
-          listeners.each do |listener|
-            dispatcher.add_listener(listener)
-          end
-        end
-      end
-    end
-  end
-end end
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.

@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/docgen/dynamic_parser"
 require "logstash/docgen/static_parser"
 require "logstash/docgen/asciidoc_format"
@@ -31,7 +47,7 @@ module LogStash module Docgen
   # This class acts as the transformation point between the format
   # and the data.
   #
-  # At the beginning of the PoC, I was targetting multiples different format: asciidoc, manpage,
+  # At the beginning of the PoC, I was targeting multiples different format: asciidoc, manpage,
   # since we only support 1 format now, we could probably remove it.
   class Document
     attr_reader :context, :format
@@ -61,6 +77,13 @@ module LogStash module Docgen
     ANCHOR_VERSION_RE = /\./
     LOGSTASH_PLUGINS_ORGANIZATION = "https://github.com/logstash-plugins"
     CANONICAL_NAME_PREFIX = "logstash"
+    GLOBAL_BLOCKLIST = ["enable_metric", "id"]
+    BLOCKLIST = {
+      "input" => GLOBAL_BLOCKLIST + [ "type", "debug", "format", "charset", "message_format", "codec", "tags", "add_field"],
+      "codec" => GLOBAL_BLOCKLIST,
+      "output" => GLOBAL_BLOCKLIST + [ "type", "tags", "exclude_tags", "codec", "workers" ],
+      "filter" => GLOBAL_BLOCKLIST + ["type", "tags", "add_tag", "remove_tag", "add_field", "remove_field", "periodic_flush" ]
+    }
 
     attr_accessor :description, :config_name, :section, :name, :default_plugin, :gemspec
 
@@ -81,9 +104,10 @@ module LogStash module Docgen
       gemspec.version.to_s
     end
 
-    def release_date(format = "%Y-%m-%d")
+    def release_date(format = "%B %-d, %Y")
       @release_date ||= begin
-                          response = open("https://rubygems.org/api/v1/versions/#{canonical_name}.json").read
+                          url ="https://rubygems.org/api/v1/versions/#{canonical_name}.json"
+                          response = open(url).read
                           # HACK: One of out default plugins, the webhdfs, has a bad encoding in the gemspec
                           # which make our parser trip with this error:
                           #
@@ -117,11 +141,11 @@ module LogStash module Docgen
       "#{CANONICAL_NAME_PREFIX}-#{section}-#{config_name}"
     end
 
-    # Developper can declare options in the order they want
+    # Developer can declare options in the order they want
     # `Hash` keys are sorted by default in the order of creation.
     # But we force a sort options name for the documentation.
     def config
-      Hash[@config.sort_by(&:first)]
+      Hash[@config.sort_by(&:first)].delete_if { |k, v| BLOCKLIST[section].include?(k) }
     end
     alias_method :sorted_attributes, :config
 
@@ -187,7 +211,7 @@ module LogStash module Docgen
     Document.new(context, format)
   end
 
-  # Note that Gem::Specifcation has an internal cache.
+  # Note that Gem::Specification has an internal cache.
   def self.load_plugin_specification(plugin_source_path)
     gemspec = Dir.glob(::File.join(plugin_source_path, "*.gemspec")).first
     raise "Cannot find the gemspec in #{plugin_source_path}" if gemspec.nil?

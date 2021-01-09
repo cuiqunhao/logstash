@@ -1,60 +1,19 @@
-# encoding: utf-8
-require "logstash/instrument/metric"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
 
-module LogStash module Instrument
-  # This class is used in the context when we disable the metric collection
-  # for specific plugin to replace the `NamespacedMetric` class with this one
-  # which doesn't produce any metric to the collector.
-  class NullMetric
-    attr_reader :namespace_name, :collector
-
-    def initialize(collector = nil)
-      @collector = collector
-    end
-
-    def increment(namespace, key, value = 1)
-      Metric.validate_key!(key)
-    end
-
-    def decrement(namespace, key, value = 1)
-      Metric.validate_key!(key)
-    end
-
-    def gauge(namespace, key, value)
-      Metric.validate_key!(key)
-    end
-
-    def report_time(namespace, key, duration)
-      Metric.validate_key!(key)
-    end
-
-    # We have to manually redefine this method since it can return an
-    # object this object also has to be implemented as a NullObject
-    def time(namespace, key)
-      Metric.validate_key!(key)
-      if block_given?
-        yield
-      else
-        NullTimedExecution
-      end
-    end
-
-    def namespace(name)
-      raise MetricNoNamespaceProvided if name.nil? || name.empty?
-      NamespacedNullMetric.new(self, name)
-    end
-
-    def self.validate_key!(key)
-      raise MetricNoKeyProvided if key.nil? || key.empty?
-    end
-
-    private
-    # Null implementation of the internal timer class
-    #
-    # @see LogStash::Instrument::TimedExecution`
-    class NullTimedExecution
-      def self.stop
-      end
-    end
-  end
-end; end
+# The contents of this file have been ported to Java. It is included for for compatibility
+# with plugins that directly require it.

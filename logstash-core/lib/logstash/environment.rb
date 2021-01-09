@@ -1,8 +1,26 @@
-# encoding: utf-8
-require "logstash/errors"
-require "logstash/java_integration"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+require "logstash-core/logstash-core"
 require "logstash/config/cpu_core_strategy"
 require "logstash/settings"
+require "logstash/util/cloud_setting_id"
+require "logstash/util/cloud_setting_auth"
+require "logstash/util/modules_setting_array"
 require "socket"
 require "stud/temporary"
 
@@ -20,16 +38,29 @@ module LogStash
     Setting::NullableString.new("path.config", nil, false),
  Setting::WritableDirectory.new("path.data", ::File.join(LogStash::Environment::LOGSTASH_HOME, "data")),
     Setting::NullableString.new("config.string", nil, false),
+           Setting::Modules.new("modules.cli", LogStash::Util::ModulesSettingArray, []),
+           Setting::Modules.new("modules", LogStash::Util::ModulesSettingArray, []),
+                    Setting.new("modules_list", Array, []),
+                    Setting.new("modules_variable_list", Array, []),
+           Setting::Modules.new("cloud.id", LogStash::Util::CloudSettingId),
+           Setting::Modules.new("cloud.auth",LogStash::Util::CloudSettingAuth),
+           Setting::Boolean.new("modules_setup", false),
            Setting::Boolean.new("config.test_and_exit", false),
            Setting::Boolean.new("config.reload.automatic", false),
-           Setting::Numeric.new("config.reload.interval", 3), # in seconds
+           Setting::TimeValue.new("config.reload.interval", "3s"), # in seconds
+           Setting::Boolean.new("config.support_escapes", false),
            Setting::Boolean.new("metric.collect", true),
             Setting::String.new("pipeline.id", "main"),
+           Setting::Boolean.new("pipeline.system", false),
    Setting::PositiveInteger.new("pipeline.workers", LogStash::Config::CpuCoreStrategy.maximum),
-   Setting::PositiveInteger.new("pipeline.output.workers", 1),
    Setting::PositiveInteger.new("pipeline.batch.size", 125),
-           Setting::Numeric.new("pipeline.batch.delay", 5), # in milliseconds
+           Setting::Numeric.new("pipeline.batch.delay", 50), # in milliseconds
            Setting::Boolean.new("pipeline.unsafe_shutdown", false),
+           Setting::Boolean.new("pipeline.reloadable", true),
+           Setting::Boolean.new("pipeline.plugin_classloaders", false),
+           Setting::Boolean.new("pipeline.separate_logs", false),
+   Setting::CoercibleString.new("pipeline.ordered", "auto", true, ["auto", "true", "false"]),
+   Setting::CoercibleString.new("pipeline.ecs_compatibility", "disabled", true, %w(disabled v1 v2)),
                     Setting.new("path.plugins", Array, []),
     Setting::NullableString.new("interactive", nil, false),
            Setting::Boolean.new("config.debug", false),
@@ -37,25 +68,55 @@ module LogStash
            Setting::Boolean.new("version", false),
            Setting::Boolean.new("help", false),
             Setting::String.new("log.format", "plain", true, ["json", "plain"]),
+           Setting::Boolean.new("http.enabled", true),
             Setting::String.new("http.host", "127.0.0.1"),
-            Setting::PortRange.new("http.port", 9600..9700),
+         Setting::PortRange.new("http.port", 9600..9700),
             Setting::String.new("http.environment", "production"),
-            Setting::String.new("queue.type", "memory", true, ["persisted", "memory", "memory_acked"]),
-            Setting::Bytes.new("queue.page_capacity", "250mb"),
+            Setting::String.new("queue.type", "memory", true, ["persisted", "memory"]),
+            Setting::Boolean.new("queue.drain", false),
+            Setting::Bytes.new("queue.page_capacity", "64mb"),
             Setting::Bytes.new("queue.max_bytes", "1024mb"),
             Setting::Numeric.new("queue.max_events", 0), # 0 is unlimited
             Setting::Numeric.new("queue.checkpoint.acks", 1024), # 0 is unlimited
             Setting::Numeric.new("queue.checkpoint.writes", 1024), # 0 is unlimited
             Setting::Numeric.new("queue.checkpoint.interval", 1000), # 0 is no time-based checkpointing
+            Setting::Boolean.new("queue.checkpoint.retry", false),
+            Setting::Boolean.new("dead_letter_queue.enable", false),
+            Setting::Bytes.new("dead_letter_queue.max_bytes", "1024mb"),
+            Setting::Numeric.new("dead_letter_queue.flush_interval", 5000),
             Setting::TimeValue.new("slowlog.threshold.warn", "-1"),
             Setting::TimeValue.new("slowlog.threshold.info", "-1"),
             Setting::TimeValue.new("slowlog.threshold.debug", "-1"),
-            Setting::TimeValue.new("slowlog.threshold.trace", "-1")
+            Setting::TimeValue.new("slowlog.threshold.trace", "-1"),
+            Setting::String.new("keystore.classname", "org.logstash.secret.store.backend.JavaKeyStore"),
+            Setting::String.new("keystore.file", ::File.join(::File.join(LogStash::Environment::LOGSTASH_HOME, "config"), "logstash.keystore"), false), # will be populated on
+            Setting::NullableString.new("monitoring.cluster_uuid")
+  # post_process
   ].each {|setting| SETTINGS.register(setting) }
+
+
 
   # Compute the default queue path based on `path.data`
   default_queue_file_path = ::File.join(SETTINGS.get("path.data"), "queue")
   SETTINGS.register Setting::WritableDirectory.new("path.queue", default_queue_file_path)
+  # Compute the default dead_letter_queue path based on `path.data`
+  default_dlq_file_path = ::File.join(SETTINGS.get("path.data"), "dead_letter_queue")
+  SETTINGS.register Setting::WritableDirectory.new("path.dead_letter_queue", default_dlq_file_path)
+
+
+  SETTINGS.on_post_process do |settings|
+    # If the data path is overridden but the queue path isn't recompute the queue path
+    # We need to do this at this stage because of the weird execution order
+    # our monkey-patched Clamp follows
+    if settings.set?("path.data")
+      if !settings.set?("path.queue")
+        settings.set_value("path.queue", ::File.join(settings.get("path.data"), "queue"))
+      end
+      if !settings.set?("path.dead_letter_queue")
+        settings.set_value("path.dead_letter_queue", ::File.join(settings.get("path.data"), "dead_letter_queue"))
+      end
+    end
+  end
 
   module Environment
     extend self
@@ -100,8 +161,6 @@ module LogStash
     end
 
     def load_jars!(pattern)
-      raise(LogStash::EnvironmentError, I18n.t("logstash.environment.jruby-required")) unless LogStash::Environment.jruby?
-
       jar_files = find_jars(pattern)
       require_jars! jar_files
     end
@@ -124,16 +183,16 @@ module LogStash
       ENV["USE_RUBY"] == "1" ? "ruby" : File.join("vendor", "jruby", "bin", "jruby")
     end
 
-    def jruby?
-      @jruby ||= !!(RUBY_PLATFORM == "java")
-    end
-
     def windows?
-      RbConfig::CONFIG['host_os'] =~ WINDOW_OS_RE
+      host_os =~ WINDOW_OS_RE
     end
 
     def linux?
-      RbConfig::CONFIG['host_os'] =~ LINUX_OS_RE
+      host_os =~ LINUX_OS_RE
+    end
+
+    def host_os
+      RbConfig::CONFIG['host_os']
     end
 
     def locales_path(path)

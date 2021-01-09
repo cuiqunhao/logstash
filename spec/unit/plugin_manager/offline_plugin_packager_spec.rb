@@ -1,9 +1,28 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "pluginmanager/offline_plugin_packager"
 require "stud/temporary"
+require "stud/try"
 require "bootstrap/util/compress"
 require "fileutils"
 require "spec_helper"
+require "webmock"
+require "openssl"
 
 def retrieve_packaged_plugins(path)
   Dir.glob(::File.join(path, "logstash", "*.gem"))
@@ -39,6 +58,8 @@ describe LogStash::PluginManager::OfflinePluginPackager do
   let(:temporary_dir) { Stud::Temporary.pathname }
   let(:target) { ::File.join(temporary_dir, "my-pack.zip")}
   let(:extract_to) { Stud::Temporary.pathname }
+  let(:retries_count) { 50 }
+  let(:retries_exceptions) { [IOError, OpenSSL::SSL::SSLError] }
 
   context "when the plugins doesn't" do
     let(:plugins_args) { "idotnotexist" }
@@ -51,9 +72,7 @@ describe LogStash::PluginManager::OfflinePluginPackager do
   context "when the plugins is a core gem" do
     %W(
     logstash-core
-    logstash-core-event-java
-    logstash-core-plugin-api
-    logstash-core-queue-jruby).each do |plugin_name|
+    logstash-core-plugin-api).each do |plugin_name|
       it "raise an exception with plugin: #{plugin_name}" do
         expect { subject.package(plugin_name, target) }.to raise_error(LogStash::PluginManager::UnpackablePluginError)
       end
@@ -68,7 +87,10 @@ describe LogStash::PluginManager::OfflinePluginPackager do
     before do
       FileUtils.mkdir_p(temporary_dir)
 
-      subject.package(plugins_args, target)
+      # Because this method will reach rubygems and can be unreliable at time on CI
+      # we will retry any IOError a few times before giving up.
+      Stud.try(retries_count.times, retries_exceptions)  { subject.package(plugins_args, target) }
+
       LogStash::Util::Zip.extract(target, extract_to)
     end
 
@@ -76,9 +98,11 @@ describe LogStash::PluginManager::OfflinePluginPackager do
       let(:plugins_args) { ["logstash-input-stdin"] }
 
       it "creates a pack with the plugin" do
-        expect(retrieve_packaged_plugins(extract_to).size).to eq(1)
-        expect(retrieve_packaged_plugins(extract_to)).to include(/logstash-input-stdin/)
-        expect(retrieve_dependencies_gems(extract_to).size).to be > 0
+        try do
+          expect(retrieve_packaged_plugins(extract_to).size).to eq(1)
+          expect(retrieve_packaged_plugins(extract_to)).to include(/logstash-input-stdin/)
+          expect(retrieve_dependencies_gems(extract_to).size).to be > 0
+        end
       end
     end
 
@@ -86,18 +110,20 @@ describe LogStash::PluginManager::OfflinePluginPackager do
       let(:plugins_args) { ["logstash-input-stdin", "logstash-input-beats"] }
 
       it "creates pack with the plugins" do
-        expect(retrieve_packaged_plugins(extract_to).size).to eq(2)
+        try do
+          expect(retrieve_packaged_plugins(extract_to).size).to eq(2)
 
-        plugins_args.each do |plugin_name|
-          expect(retrieve_packaged_plugins(extract_to)).to include(/#{plugin_name}/)
+          plugins_args.each do |plugin_name|
+            expect(retrieve_packaged_plugins(extract_to)).to include(/#{plugin_name}/)
+          end
+
+          expect(retrieve_dependencies_gems(extract_to).size).to be > 0
         end
-
-        expect(retrieve_dependencies_gems(extract_to).size).to be > 0
       end
     end
 
     context "with wildcards" do
-      let(:plugins_args) { ["logstash-filter-*"] }
+      let(:plugins_args) { ["logstash-filter-x*"] }
 
       it "creates a pack with the plugins" do
         expect(retrieve_packaged_plugins(extract_to).size).to eq(LogStash::PluginManager::SpecificationHelpers.find_by_name_with_wildcards(plugins_args.first).size)
@@ -111,7 +137,7 @@ describe LogStash::PluginManager::OfflinePluginPackager do
     end
 
     context "with wildcards and normal plugins" do
-      let(:plugins_args) { ["logstash-filter-*", "logstash-input-beats"] }
+      let(:plugins_args) { ["logstash-filter-x*", "logstash-input-beats"] }
 
       it "creates a pack with the plugins" do
         groups = retrieve_packaged_plugins(extract_to).group_by { |gem_file| ::File.basename(gem_file).split("-")[1] }

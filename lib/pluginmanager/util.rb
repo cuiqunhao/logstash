@@ -1,5 +1,22 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "rubygems/package"
+require_relative "../bootstrap/patches/remote_fetcher"
 
 module LogStash::PluginManager
 
@@ -77,7 +94,7 @@ module LogStash::PluginManager
   end
 
   # retrieve gem specs for all or specified name valid logstash plugins locally installed
-  # @param name [String] specific plugin name to find or nil for all plungins
+  # @param name [String] specific plugin name to find or nil for all plugins
   # @return [Array<Gem::Specification>] all local logstash plugin gem specs
   def self.find_plugins_gem_specs(name = nil)
     specs = name ? Gem::Specification.find_all_by_name(name) : Gem::Specification.find_all
@@ -85,7 +102,7 @@ module LogStash::PluginManager
   end
 
   # list of all locally installed plugins specs specified in the Gemfile.
-  # note that an installed plugin dependecies like codecs will not be listed, only those
+  # note that an installed plugin dependencies like codecs will not be listed, only those
   # specifically listed in the Gemfile.
   # @param gemfile [LogStash::Gemfile] the gemfile to validate against
   # @return [Array<Gem::Specification>] list of plugin specs
@@ -97,13 +114,37 @@ module LogStash::PluginManager
 
   # @param plugin [String] plugin name
   # @param gemfile [LogStash::Gemfile] the gemfile to validate against
-  # @return [Boolean] true if the plugin is an installed logstash plugin and spefificed in the Gemfile
+  # @return [Boolean] true if the plugin is an installed logstash plugin and specified in the Gemfile
   def self.installed_plugin?(plugin, gemfile)
     !!gemfile.find(plugin) && find_plugins_gem_specs(plugin).any?
   end
 
+  # @param spec [Gem::Specification] plugin specification
+  # @return [Boolean] true if the gemspec is from an integration plugin
+  def self.integration_plugin_spec?(spec)
+    spec.metadata &&
+      spec.metadata["logstash_plugin"] == "true" &&
+      spec.metadata["logstash_group"] == "integration"
+  end
+
+  # @param spec [Gem::Specification] plugin specification
+  # @return [Array] array of [plugin name] representing plugins a given integration plugin provides
+  def self.integration_plugin_provides(spec)
+    spec.metadata["integration_plugins"].split(",")
+  end
+
+  # @param name [String] plugin name
+  # @return [Gem::Specification] Gem specification of integration plugin that provides plugin
+  def self.which_integration_plugin_provides(name, gemfile)
+    all_installed_plugins_gem_specs(gemfile) \
+      .select {|spec| integration_plugin_spec?(spec) }
+      .find do |integration_plugin|
+        integration_plugin_provides(integration_plugin).any? {|plugin| plugin == name }
+      end
+  end
+
   # @param plugin_list [Array] array of [plugin name, version] tuples
-  # @return [Array] array of [plugin name, version, ...] tuples when duplciate names have been merged and non duplicate version requirements added
+  # @return [Array] array of [plugin name, version, ...] tuples when duplicate names have been merged and non duplicate version requirements added
   def self.merge_duplicates(plugin_list)
 
     # quick & dirty naive dedup for now

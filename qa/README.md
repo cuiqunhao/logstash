@@ -25,7 +25,7 @@ take a while depending on your internet speed).
 ### Running Tests
 
 It is possible to run the full suite of the acceptance test with the codebase by 
-running the command `ci/ci_acceptance.sh`, this command will generate the artifacts, bootstrap
+running the command `ci/acceptance_tests.sh`, this command will generate the artifacts, bootstrap
 the VM and run the tests.
 
 This test are based on a collection of Vagrant defined VM's where the
@@ -64,7 +64,7 @@ that using the `rake qa:vm:setup[platform]` task. This is done like this
 as bootstrap imply setting up the VM'S and this might take some time and
 you might only want to this once.
 
-In the feature we might add new rake tasks to do all at once, but for now you can use the script under
+In the future we might add new rake tasks to do all at once, but for now you can use the script under
 `ci/ci_acceptance.sh` to do all at once.
 
 For local testing purposes, is recommended to not run all together, pick your target and run with the single machine command, If you're willing to run on single one, you should use:
@@ -123,7 +123,7 @@ Important bits here are:
 have to go under specific bootstrap scripts (see ```specific: true ```
 in the platform definition).
 
-This file is the one that you will use to know about differnt OS's
+This file is the one that you will use to know about different OS's
 testes, add new ones, etc..
 
 ### I want to add a test, what should I do?

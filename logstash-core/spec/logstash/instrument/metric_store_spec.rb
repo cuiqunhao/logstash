@@ -1,6 +1,21 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/instrument/metric_store"
-require "logstash/instrument/metric_type/base"
 
 describe LogStash::Instrument::MetricStore do
   let(:namespaces) { [ :root, :pipelines, :pipeline_01 ] }
@@ -53,6 +68,20 @@ describe LogStash::Instrument::MetricStore do
       end
     end
 
+    context "#has_metric?" do
+      context "when the path exist" do
+        it "returns true" do
+          expect(subject.has_metric?(:node, :sashimi, :pipelines, :pipeline01, :plugins, :"logstash-output-elasticsearch", :event_in)).to be_truthy
+        end
+      end
+
+      context "when the path doesn't exist" do
+        it "returns false" do
+          expect(subject.has_metric?(:node, :sashimi, :pipelines, :pipeline01, :plugins, :"logstash-input-nothing")).to be_falsey
+        end
+      end
+    end
+
     describe "#get" do
       context "when the path exist" do
         it "retrieves end of of a branch" do
@@ -67,7 +96,7 @@ describe LogStash::Instrument::MetricStore do
 
         it "allow to retrieve a specific metrics" do
           metrics = subject.get(:node, :sashimi, :pipelines, :pipeline01, :plugins, :"logstash-output-elasticsearch", :event_in)
-          expect(metrics).to match(a_hash_including(:node => a_hash_including(:sashimi => a_hash_including(:pipelines  => a_hash_including(:pipeline01 => a_hash_including(:plugins => a_hash_including(:"logstash-output-elasticsearch" => a_hash_including(:event_in => be_kind_of(LogStash::Instrument::MetricType::Base)))))))))
+          expect(metrics).to match(a_hash_including(:node => a_hash_including(:sashimi => a_hash_including(:pipelines  => a_hash_including(:pipeline01 => a_hash_including(:plugins => a_hash_including(:"logstash-output-elasticsearch" => a_hash_including(:event_in => be_kind_of(LogStash::Instrument::MetricType::Counter)))))))))
         end
 
         context "with filtered keys" do
@@ -113,7 +142,7 @@ describe LogStash::Instrument::MetricStore do
 
           it "allow to retrieve a specific metrics" do
             metrics = subject.get_with_path("node/sashimi/pipelines/pipeline01/plugins/logstash-output-elasticsearch/event_in")
-            expect(metrics).to match(a_hash_including(:node => a_hash_including(:sashimi => a_hash_including(:pipelines  => a_hash_including(:pipeline01 => a_hash_including(:plugins => a_hash_including(:"logstash-output-elasticsearch" => a_hash_including(:event_in => be_kind_of(LogStash::Instrument::MetricType::Base)))))))))
+            expect(metrics).to match(a_hash_including(:node => a_hash_including(:sashimi => a_hash_including(:pipelines  => a_hash_including(:pipeline01 => a_hash_including(:plugins => a_hash_including(:"logstash-output-elasticsearch" => a_hash_including(:event_in => be_kind_of(LogStash::Instrument::MetricType::Counter)))))))))
           end
 
           context "with filtered keys" do

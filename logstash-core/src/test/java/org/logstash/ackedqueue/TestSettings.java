@@ -1,48 +1,34 @@
-package org.logstash.ackedqueue;
+/*
+ * Licensed to Elasticsearch B.V. under one or more contributor
+ * license agreements. See the NOTICE file distributed with
+ * this work for additional information regarding copyright
+ * ownership. Elasticsearch B.V. licenses this file to you under
+ * the Apache License, Version 2.0 (the "License"); you may
+ * not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *	http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
 
-import org.logstash.common.io.ByteBufferPageIO;
-import org.logstash.common.io.CheckpointIOFactory;
-import org.logstash.common.io.FileCheckpointIO;
-import org.logstash.common.io.MemoryCheckpointIO;
-import org.logstash.common.io.MmapPageIO;
-import org.logstash.common.io.PageIOFactory;
+
+package org.logstash.ackedqueue;
 
 public class TestSettings {
 
-    public static Settings getSettings(int capacity) {
-        MemoryCheckpointIO.clearSources();
-        Settings s = new MemorySettings();
-        PageIOFactory pageIOFactory = (pageNum, size, path) -> new ByteBufferPageIO(pageNum, size, path);
-        CheckpointIOFactory checkpointIOFactory = (source) -> new MemoryCheckpointIO(source);
-        s.setCapacity(capacity);
-        s.setElementIOFactory(pageIOFactory);
-        s.setCheckpointIOFactory(checkpointIOFactory);
-        s.setElementClass(StringElement.class);
-        return s;
+    public static Settings persistedQueueSettings(int capacity, String folder) {
+        return SettingsImpl.fileSettingsBuilder(folder).capacity(capacity)
+            .checkpointMaxWrites(1).elementClass(StringElement.class).build();
     }
 
-    public static Settings getSettings(int capacity, long size) {
-        MemoryCheckpointIO.clearSources();
-        Settings s = new MemorySettings();
-        PageIOFactory pageIOFactory = (pageNum, pageSize, path) -> new ByteBufferPageIO(pageNum, pageSize, path);
-        CheckpointIOFactory checkpointIOFactory = (source) -> new MemoryCheckpointIO(source);
-        s.setCapacity(capacity);
-        s.setQueueMaxBytes(size);
-        s.setElementIOFactory(pageIOFactory);
-        s.setCheckpointIOFactory(checkpointIOFactory);
-        s.setElementClass(StringElement.class);
-        return s;
-    }
-
-    public static Settings getSettingsCheckpointFilePageMemory(int capacity, String folder) {
-        Settings s = new FileSettings(folder);
-        PageIOFactory pageIOFactory = (pageNum, size, path) -> new MmapPageIO(pageNum, size, path);
-        CheckpointIOFactory checkpointIOFactory = (source) -> new FileCheckpointIO(source);
-        s.setCapacity(capacity);
-        s.setElementIOFactory(pageIOFactory);
-        s.setCheckpointMaxWrites(1);
-        s.setCheckpointIOFactory(checkpointIOFactory);
-        s.setElementClass(StringElement.class);
-        return s;
+    public static Settings persistedQueueSettings(int capacity, long size, String folder) {
+        return SettingsImpl.fileSettingsBuilder(folder).capacity(capacity)
+            .queueMaxBytes(size).elementClass(StringElement.class).build();
     }
 }

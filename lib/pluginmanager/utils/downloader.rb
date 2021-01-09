@@ -1,4 +1,20 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "ruby-progressbar"
 require "pluginmanager/utils/http_client"
 require "pluginmanager/errors"
@@ -46,7 +62,7 @@ module LogStash module PluginManager module Utils
 
       begin
         FileUtils.mkdir_p(download_to)
-        downloaded_file = ::File.open(::File.join(download_to, ::File.basename(remote_file_uri.path)), "w")
+        downloaded_file = ::File.open(::File.join(download_to, ::File.basename(remote_file_uri.path)), "wb")
 
         HttpClient.start(remote_file_uri) do |http|
           request = Net::HTTP::Get.new(remote_file_uri.path)
@@ -68,7 +84,7 @@ module LogStash module PluginManager module Utils
           downloaded_file.path
         end
       rescue => e
-        downloaded_file.close rescue nil
+        downloaded_file.close unless downloaded_file.closed?
         FileUtils.rm_rf(download_to)
         raise e
       end

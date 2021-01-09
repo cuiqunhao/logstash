@@ -1,26 +1,43 @@
-# encoding: utf-8
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/instrument/periodic_poller/base"
 require "logstash/instrument/periodic_poller/load_average"
 require "logstash/environment"
-require "jrmonitor"
 require "set"
 
+java_import 'com.sun.management.UnixOperatingSystemMXBean'
 java_import 'java.lang.management.ManagementFactory'
 java_import 'java.lang.management.OperatingSystemMXBean'
 java_import 'java.lang.management.GarbageCollectorMXBean'
 java_import 'java.lang.management.RuntimeMXBean'
-java_import 'com.sun.management.UnixOperatingSystemMXBean'
 java_import 'javax.management.MBeanServer'
 java_import 'javax.management.ObjectName'
 java_import 'javax.management.AttributeList'
 java_import 'javax.naming.directory.Attribute'
+java_import 'org.logstash.instrument.reports.MemoryReport'
+java_import 'org.logstash.instrument.reports.ProcessReport'
 
 
 module LogStash module Instrument module PeriodicPoller
   class JVM < Base
     class GarbageCollectorName
-      YOUNG_GC_NAMES = Set.new(["Copy", "PS Scavenge", "ParNew", "G1 Young Generation"])
-      OLD_GC_NAMES = Set.new(["MarkSweepCompact", "PS MarkSweep", "ConcurrentMarkSweep", "G1 Old Generation"])
+      YOUNG_GC_NAMES = Set.new(["Copy", "PS Scavenge", "ParNew", "G1 Young Generation", "scavenge", "GPGC New"])
+      OLD_GC_NAMES = Set.new(["MarkSweepCompact", "PS MarkSweep", "ConcurrentMarkSweep", "G1 Old Generation", "global", "GPGC Old"])
 
       YOUNG = :young
       OLD = :old
@@ -34,6 +51,13 @@ module LogStash module Instrument module PeriodicPoller
       end
     end
 
+    MEMORY_TRANSPOSE_MAP = {
+      "usage.used" => :used_in_bytes,
+      "usage.committed" => :committed_in_bytes,
+      "usage.max" => :max_in_bytes,
+      "peak.max" => :peak_max_in_bytes,
+      "peak.used" => :peak_used_in_bytes
+    }
 
     attr_reader :metric
 
@@ -43,8 +67,8 @@ module LogStash module Instrument module PeriodicPoller
     end
 
     def collect
-      raw = JRMonitor.memory.generate
-      collect_jvm_metrics(raw)      
+      raw = MemoryReport.generate
+      collect_jvm_metrics(raw)
       collect_pools_metrics(raw)
       collect_threads_metrics
       collect_process_metrics
@@ -52,15 +76,15 @@ module LogStash module Instrument module PeriodicPoller
       collect_load_average
     end
 
-    private
-
     def collect_gc_stats
       garbage_collectors = ManagementFactory.getGarbageCollectorMXBeans()
 
       garbage_collectors.each do |collector|
-        name = GarbageCollectorName.get(collector.getName())
+        collector_name = collector.getName()
+        logger.debug("collector name", :name => collector_name)
+        name = GarbageCollectorName.get(collector_name)
         if name.nil?
-          logger.error("Unknown garbage collector name", :name => name)
+          logger.error("Unknown garbage collector name", :name => collector_name)
         else
           metric.gauge([:jvm, :gc, :collectors, name], :collection_count, collector.getCollectionCount())
           metric.gauge([:jvm, :gc, :collectors, name], :collection_time_in_millis, collector.getCollectionTime())
@@ -69,22 +93,16 @@ module LogStash module Instrument module PeriodicPoller
     end
 
     def collect_threads_metrics
-      threads = JRMonitor.threads.generate
+      threads_mx = ManagementFactory.getThreadMXBean()
 
-      current = threads.count
-      if @peak_threads.nil? || @peak_threads < current
-        @peak_threads = current
-      end
-
-      metric.gauge([:jvm, :threads], :count, threads.count)
-      metric.gauge([:jvm, :threads], :peak_count, @peak_threads)
+      metric.gauge([:jvm, :threads], :count, threads_mx.getThreadCount())
+      metric.gauge([:jvm, :threads], :peak_count, threads_mx.getPeakThreadCount())
     end
 
     def collect_process_metrics
-      process_metrics = JRMonitor.process.generate
+      process_metrics = ProcessReport.generate
 
       path = [:jvm, :process]
-
 
       open_fds = process_metrics["open_file_descriptors"]
       if @peak_open_fds.nil? || open_fds > @peak_open_fds
@@ -146,18 +164,20 @@ module LogStash module Instrument module PeriodicPoller
       end
     end
 
-
     def build_pools_metrics(data)
       heap = data["heap"]
       old  = {}
       old = old.merge!(heap["CMS Old Gen"]) if heap.has_key?("CMS Old Gen")
       old = old.merge!(heap["PS Old Gen"])  if heap.has_key?("PS Old Gen")
+      old = old.merge!(heap["G1 Old Gen"])  if heap.has_key?("G1 Old Gen")
       young = {}
       young = young.merge!(heap["Par Eden Space"]) if heap.has_key?("Par Eden Space")
       young = young.merge!(heap["PS Eden Space"])  if heap.has_key?("PS Eden Space")
+      young = young.merge!(heap["G1 Eden Space"])  if heap.has_key?("G1 Eden Space")
       survivor = {}
       survivor = survivor.merge!(heap["Par Survivor Space"]) if heap.has_key?("Par Survivor Space")
       survivor = survivor.merge!(heap["PS Survivor Space"])  if heap.has_key?("PS Survivor Space")
+      survivor = survivor.merge!(heap["G1 Survivor Space"])  if heap.has_key?("G1 Survivor Space")
       {
         "young"    => aggregate_information_for(young),
         "old"      => aggregate_information_for(old),
@@ -169,11 +189,10 @@ module LogStash module Instrument module PeriodicPoller
       collection.reduce(default_information_accumulator) do |m,e|
         e = { e[0] => e[1] } if e.is_a?(Array)
         e.each_pair do |k,v|
-          m[:used_in_bytes] += v       if k.include?("used")
-          m[:committed_in_bytes] += v  if k.include?("committed")
-          m[:max_in_bytes] += v        if k.include?("max")
-          m[:peak_max_in_bytes] += v   if k.include?("peak.max")
-          m[:peak_used_in_bytes] += v  if k.include?("peak.used")
+          if MEMORY_TRANSPOSE_MAP.include?(k)
+            transpose_key = MEMORY_TRANSPOSE_MAP[k]
+            m[transpose_key] += v
+          end
         end
         m
       end

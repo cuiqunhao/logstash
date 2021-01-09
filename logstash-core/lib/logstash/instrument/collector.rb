@@ -1,7 +1,21 @@
-# encoding: utf-8
-require "logstash/instrument/snapshot"
+# Licensed to Elasticsearch B.V. under one or more contributor
+# license agreements. See the NOTICE file distributed with
+# this work for additional information regarding copyright
+# ownership. Elasticsearch B.V. licenses this file to you under
+# the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#  http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 require "logstash/instrument/metric_store"
-require "logstash/util/loggable"
 require "concurrent/timer_task"
 require "observer"
 require "singleton"
@@ -29,15 +43,11 @@ module LogStash module Instrument
     # of update the metric
     #
     # If there is a problem with the key or the type of metric we will record an error
-    # but we wont stop processing events, theses errors are not considered fatal.
+    # but we won't stop processing events, theses errors are not considered fatal.
     #
     def push(namespaces_path, key, type, *metric_type_params)
       begin
-        metric = @metric_store.fetch_or_store(namespaces_path, key) do
-          LogStash::Instrument::MetricType.create(type, namespaces_path, key)
-        end
-
-        metric.execute(*metric_type_params)
+        get(namespaces_path, key, type).execute(*metric_type_params)
       rescue MetricStore::NamespacesExpectedError => e
         logger.error("Collector: Cannot record metric", :exception => e)
       rescue NameError => e
@@ -48,6 +58,12 @@ module LogStash module Instrument
                      :metrics_params => metric_type_params,
                      :exception => e,
                      :stacktrace => e.backtrace)
+      end
+    end
+
+    def get(namespaces_path, key, type)
+      @metric_store.fetch_or_store(namespaces_path, key) do
+        LogStash::Instrument::MetricType.create(type, namespaces_path, key)
       end
     end
 
